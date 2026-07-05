@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Бронь · Агрегатор заведений — мобильное приложение</title>
+<link rel="stylesheet" href="colors_and_type.css" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; }
+  #root { height: 100vh; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="app/phone.jsx"></script>
+<script type="text/babel" src="app/variant-a.jsx"></script>
+<script type="text/babel" src="app/variant-b.jsx"></script>
+
+<script type="text/babel">
+const { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor } = window;
+const { DesignCanvas, DCSection, DCArtboard } = window;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "#ff6f09",
+  "rounding": "Мягкие",
+  "density": "Плотно",
+  "surface": "Тёплый"
+}/*EDITMODE-END*/;
+
+const RADIUS = { "Острые": "9px", "Мягкие": "18px", "Круглые": "26px" };
+const GAP = { "Плотно": "7px", "Обычно": "10px", "Просторно": "15px" };
+
+function App() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+
+  React.useEffect(() => {
+    const r = document.documentElement;
+    r.style.setProperty('--primary', t.accent);
+    r.style.setProperty('--ui-radius', RADIUS[t.rounding] || '18px');
+    r.style.setProperty('--ui-gap', GAP[t.density] || '10px');
+    if (t.surface === 'Светлый') {
+      r.style.setProperty('--background', '#f6f5f2');
+      r.style.setProperty('--card', '#ffffff');
+    } else {
+      r.style.setProperty('--background', '#f2f1ed');
+      r.style.setProperty('--card', '#fefefe');
+    }
+  }, [t.accent, t.rounding, t.density, t.surface]);
+
+  const A = window.VariantA, B = window.VariantB;
+  const W = 322, H = 698;
+
+  return (
+    <React.Fragment>
+      <DesignCanvas>
+        <DCSection id="variant-a" title="Вариант A · Минимализм" subtitle="Списочный листинг · бронь одним экраном · максимум воздуха">
+          <DCArtboard id="a-list" label="Листинг" width={W} height={H}><A.A_List /></DCArtboard>
+          <DCArtboard id="a-venue" label="Карточка заведения" width={W} height={H}><A.A_Venue /></DCArtboard>
+          <DCArtboard id="a-book" label="Бронирование" width={W} height={H}><A.A_Book /></DCArtboard>
+          <DCArtboard id="a-confirm" label="Подтверждение" width={W} height={H}><A.A_Confirm /></DCArtboard>
+          <DCArtboard id="a-history" label="История" width={W} height={H}><A.A_History /></DCArtboard>
+          <DCArtboard id="a-profile" label="Профиль" width={W} height={H}><A.A_Profile /></DCArtboard>
+        </DCSection>
+
+        <DCSection id="variant-b" title="Вариант B · Насыщенный" subtitle="Фото-карточки · пошаговый визард брони · акцентная навигация">
+          <DCArtboard id="b-list" label="Листинг" width={W} height={H}><B.B_List /></DCArtboard>
+          <DCArtboard id="b-venue" label="Карточка заведения" width={W} height={H}><B.B_Venue /></DCArtboard>
+          <DCArtboard id="b-book" label="Бронирование" width={W} height={H}><B.B_Book /></DCArtboard>
+          <DCArtboard id="b-confirm" label="Подтверждение" width={W} height={H}><B.B_Confirm /></DCArtboard>
+          <DCArtboard id="b-history" label="История" width={W} height={H}><B.B_History /></DCArtboard>
+          <DCArtboard id="b-profile" label="Профиль" width={W} height={H}><B.B_Profile /></DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Бренд" />
+        <TweakColor label="Акцент" value={t.accent}
+          options={["#d94040", "#ff6f09", "#c2302f", "#4c2d2a"]}
+          onChange={(v) => setTweak('accent', v)} />
+        <TweakColor label="Фон" value={t.surface === 'Светлый' ? '#ffffff' : '#f2f1ed'}
+          options={["#f2f1ed", "#ffffff"]}
+          onChange={(v) => setTweak('surface', v === '#ffffff' ? 'Светлый' : 'Тёплый')} />
+        <TweakSection label="Форма" />
+        <TweakRadio label="Скругление" value={t.rounding}
+          options={["Острые", "Мягкие", "Круглые"]}
+          onChange={(v) => setTweak('rounding', v)} />
+        <TweakRadio label="Плотность" value={t.density}
+          options={["Плотно", "Обычно", "Просторно"]}
+          onChange={(v) => setTweak('density', v)} />
+      </TweaksPanel>
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

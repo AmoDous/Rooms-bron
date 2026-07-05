@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Бронь · Десктоп — агрегатор заведений</title>
+<link rel="stylesheet" href="colors_and_type.css" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #e7e4de; overflow: hidden; }
+  #root { height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .resto-card { transition: transform .15s ease, box-shadow .15s ease; }
+  .resto-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-soft); }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.16); border-radius: 9px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#ff6f09">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#ff6f09"/>
+    <g fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M600 250c-93 0-168 73-168 163 0 122 168 287 168 287s168-165 168-287c0-90-75-163-168-163z"/>
+      <circle cx="600" cy="416" r="58"/>
+    </g>
+  </svg>
+</template>
+<div id="root"></div>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="browser-window.jsx"></script>
+<script type="text/babel" src="app/phone.jsx"></script>
+<script type="text/babel" src="app/web-shell.jsx"></script>
+<script type="text/babel" src="app/web-pages.jsx"></script>
+
+<script type="text/babel">
+const { useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor } = window;
+const { ChromeWindow, DesktopApp } = window;
+
+const W = 1280, H = 824;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "#ff6f09",
+  "rounding": "Круглые",
+  "density": "Обычно",
+  "surface": "Светлый"
+}/*EDITMODE-END*/;
+
+const RADIUS = { "Острые": "9px", "Мягкие": "16px", "Круглые": "24px" };
+const GAP = { "Плотно": "7px", "Обычно": "10px", "Просторно": "15px" };
+
+function Scaler({ children }) {
+  const [scale, setScale] = React.useState(1);
+  React.useEffect(() => {
+    const fit = () => setScale(Math.min((window.innerWidth - 40) / W, (window.innerHeight - 40) / H, 1));
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+  return <div style={{ width: W, height: H, transform: `scale(${scale})`, transformOrigin: 'center center', flexShrink: 0 }}>{children}</div>;
+}
+
+function App() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  React.useEffect(() => {
+    const r = document.documentElement;
+    r.style.setProperty('--primary', t.accent);
+    r.style.setProperty('--ui-radius', RADIUS[t.rounding] || '16px');
+    r.style.setProperty('--ui-gap', GAP[t.density] || '10px');
+    if (t.surface === 'Светлый') { r.style.setProperty('--background', '#f6f5f2'); r.style.setProperty('--card', '#ffffff'); }
+    else { r.style.setProperty('--background', '#f2f1ed'); r.style.setProperty('--card', '#fefefe'); }
+  }, [t.accent, t.rounding, t.density, t.surface]);
+
+  return (
+    <React.Fragment>
+      <Scaler>
+        <ChromeWindow width={W} height={H} tabs={[{ title: 'Бронь · Столики в Алматы' }, { title: 'Aurora Rooftop' }]} activeIndex={0} url="bron.kz/almaty/restaurants">
+          <DesktopApp />
+        </ChromeWindow>
+      </Scaler>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Бренд" />
+        <TweakColor label="Акцент" value={t.accent}
+          options={["#ff6f09", "#d94040", "#c2302f", "#4c2d2a"]}
+          onChange={(v) => setTweak('accent', v)} />
+        <TweakColor label="Фон" value={t.surface === 'Светлый' ? '#ffffff' : '#f2f1ed'}
+          options={["#f2f1ed", "#ffffff"]}
+          onChange={(v) => setTweak('surface', v === '#ffffff' ? 'Светлый' : 'Тёплый')} />
+        <TweakSection label="Форма" />
+        <TweakRadio label="Скругление" value={t.rounding}
+          options={["Острые", "Мягкие", "Круглые"]}
+          onChange={(v) => setTweak('rounding', v)} />
+        <TweakRadio label="Плотность" value={t.density}
+          options={["Плотно", "Обычно", "Просторно"]}
+          onChange={(v) => setTweak('density', v)} />
+      </TweaksPanel>
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

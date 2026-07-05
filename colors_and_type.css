@@ -1,0 +1,257 @@
+/* ============================================================
+   YumUp — Colors & Type
+   ------------------------------------------------------------
+   Source of truth: yumup-frontend/app/globals.css
+   Token values mirror the production Tailwind v4 theme.
+   Use the semantic tokens (--primary, --foreground, etc.)
+   in product UI, and the raw scale (--ramp-orange-500) for
+   marketing / illustrative work.
+   ============================================================ */
+
+/* ---- Webfont -------------------------------------------------
+   Manrope — the brand's only typeface. Loaded from Google Fonts
+   in production via next/font (Latin + Cyrillic). The product
+   uses it as both the heading font and the (somewhat unusual)
+   "mono" font — there is no separate monospace family.
+   ------------------------------------------------------------ */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root {
+  /* ============ RAW COLOR SCALE ============ */
+
+  /* Brand orange — the YumUp logo color, used for accents,
+     focus rings, sidebar highlights, the "kicker" eyebrow text. */
+  --ramp-orange-50:  #fff8f1;
+  --ramp-orange-100: #fff2ed;
+  --ramp-orange-200: #fde8e0;
+  --ramp-orange-300: #ffb11a;
+  --ramp-orange-400: #ff8c1f;
+  --ramp-orange-500: #ff6f09;   /* accent / warning / ring */
+  --ramp-orange-600: #ff6b3d;   /* primary in dark mode */
+  --ramp-orange-700: #d97757;
+
+  /* Brand red — the secondary brand color (the smile / `Y`).
+     Used as `primary` in light mode and for destructive UI. */
+  --ramp-red-100:    #fef0f0;
+  --ramp-red-500:    #d94040;   /* primary (light) / destructive */
+  --ramp-red-600:    #c2302f;
+  --ramp-red-light:  #ff6b6b;   /* destructive (dark) */
+
+  /* Warm neutrals — paper-toned background and stone borders.
+     The whole app sits on a slightly creamy off-white, never
+     pure #fff. This is a deliberate "warm sheet" feel. */
+  --ramp-paper-50:   #fefefe;   /* card */
+  --ramp-paper-100:  #f8f6f4;   /* hero panel */
+  --ramp-paper-200:  #f7f4ef;
+  --ramp-paper-300:  #f2f1ed;   /* page background */
+  --ramp-paper-400:  #f0efe9;   /* muted */
+  --ramp-paper-500:  #e4e3dd;   /* border / subtle */
+
+  /* Cool neutrals — text and overlays */
+  --ramp-ink-100:    #bdbdbd;   /* subtle-foreground */
+  --ramp-ink-300:    #6b6b6b;   /* muted-foreground */
+  --ramp-ink-500:    #4c2d2a;   /* info — a brown, not blue */
+  --ramp-ink-700:    #2c2c2e;   /* foreground / secondary */
+  --ramp-ink-900:    #1c1c1c;   /* overlay */
+  --ramp-ink-950:    #17161b;   /* dark background */
+
+  /* Semantic supports */
+  --ramp-success:    #1a9b4b;
+  --ramp-success-bg: #ebf9f3;
+  --ramp-warning-bg: #fef7eb;
+
+  /* ============ SEMANTIC TOKENS (light) ============ */
+  --background: var(--ramp-paper-300);
+  --foreground: var(--ramp-ink-700);
+  --card: var(--ramp-paper-50);
+  --card-foreground: var(--ramp-ink-700);
+  --popover: var(--ramp-paper-50);
+  --popover-foreground: var(--ramp-ink-700);
+
+  --primary: var(--ramp-red-500);            /* yes — primary is red, not orange */
+  --primary-foreground: #ffffff;
+  --secondary: var(--ramp-ink-700);
+  --secondary-foreground: #ffffff;
+
+  --accent: var(--ramp-orange-500);          /* the orange used for kickers + ring */
+  --accent-foreground: #ffffff;
+
+  --muted: var(--ramp-paper-400);
+  --muted-foreground: var(--ramp-ink-300);
+  --subtle: var(--ramp-paper-500);
+  --subtle-foreground: var(--ramp-ink-100);
+
+  --border: var(--ramp-paper-500);
+  --input: var(--ramp-paper-500);
+  --ring: var(--ramp-orange-500);
+
+  --destructive: var(--ramp-red-500);
+  --error: var(--ramp-red-500);
+  --error-foreground: #ffffff;
+  --success: var(--ramp-success);
+  --success-foreground: #ffffff;
+  --warning: var(--ramp-orange-500);
+  --warning-foreground: #ffffff;
+  --info: var(--ramp-ink-500);
+  --info-foreground: #ffffff;
+  --overlay: var(--ramp-ink-900);
+
+  /* Charts re-use the brand palette — orange first, never a generic blue. */
+  --chart-1: var(--ramp-orange-500);
+  --chart-2: var(--ramp-red-500);
+  --chart-3: var(--ramp-success);
+  --chart-4: var(--ramp-ink-500);
+  --chart-5: var(--ramp-ink-100);
+
+  /* ============ RADII ============
+     Base unit is 14px. The scale is multiplicative — soft rounding
+     compounds into very pillowy 36px+ corners on big surfaces.   */
+  --radius: 0.875rem;                         /* 14px — base */
+  --radius-sm: calc(var(--radius) * 0.6);     /* ~8px */
+  --radius-md: calc(var(--radius) * 0.8);     /* ~11px */
+  --radius-lg: var(--radius);                 /* 14px */
+  --radius-xl: calc(var(--radius) * 1.4);     /* ~20px — cards */
+  --radius-2xl: calc(var(--radius) * 1.8);    /* ~25px — big cards */
+  --radius-3xl: calc(var(--radius) * 2.2);    /* ~31px — hero blocks */
+  --radius-4xl: calc(var(--radius) * 2.6);    /* ~36px — phone shells */
+
+  /* ============ SHADOWS ============
+     The system uses warm, low-saturation shadows. Two named
+     elevations + one focus ring. Elevation never exceeds these. */
+  --shadow-card: 0 2px 16px rgba(0, 0, 0, 0.07);
+  --shadow-soft: 0 12px 32px rgba(28, 28, 28, 0.08);
+  --shadow-focus: 0 0 0 4px color-mix(in srgb, var(--ring) 22%, transparent);
+
+  /* ============ TYPE FAMILIES ============ */
+  --font-sans:    "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-heading: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:    "Manrope", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.dark {
+  --background: var(--ramp-ink-950);
+  --foreground: var(--ramp-paper-50);
+  --card: var(--ramp-ink-900);
+  --card-foreground: var(--ramp-paper-50);
+  --popover: var(--ramp-ink-700);
+  --primary: var(--ramp-orange-600);
+  --secondary: var(--ramp-ink-700);
+  --muted: var(--ramp-ink-700);
+  --muted-foreground: var(--ramp-ink-100);
+  --accent: var(--ramp-orange-500);
+  --destructive: var(--ramp-red-light);
+  --error: var(--ramp-red-light);
+  --success: #39b969;
+  --border: rgba(255, 255, 255, 0.10);
+  --input: rgba(255, 255, 255, 0.12);
+  --ring: var(--ramp-orange-500);
+  --overlay: #0f0f12;
+}
+
+/* ============================================================
+   TYPE SCALE — pulled from components/ui/typography.tsx
+   The system has six heading levels and a five-step body scale.
+   Tracking is consistently negative (-0.02em on display,
+   -0.01em on body); brand kickers go positive (+0.08em).
+   ============================================================ */
+
+:where(html) {
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background: var(--background);
+  font-feature-settings: "liga" 1, "kern" 1;
+  text-rendering: optimizeLegibility;
+}
+
+/* ----- Display / heading ----- */
+.h-display {                /* marketing display — landing hero */
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: clamp(2.85rem, 6vw, 4.35rem);
+  line-height: 0.96;
+  letter-spacing: -0.04em;
+}
+
+.h1 {
+  font-family: var(--font-heading);
+  font-size: 32px;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.h2 {
+  font-family: var(--font-heading);
+  font-size: 24px;
+  line-height: 1.10;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.h3 {
+  font-family: var(--font-heading);
+  font-size: 20px;
+  line-height: 1.10;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.h4 {
+  font-family: var(--font-heading);
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.h5 {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  line-height: 1.20;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.h6 {
+  font-family: var(--font-heading);
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ----- Body ----- */
+.text-xs   { font-size: 10px; line-height: 1.4;  letter-spacing: -0.01em; }
+.text-sm   { font-size: 11px; line-height: 1.4;  letter-spacing: -0.01em; }
+.text-base { font-size: 14px; line-height: 1.45; letter-spacing: -0.01em; }
+.text-lg   { font-size: 15px; line-height: 1.45; letter-spacing: -0.01em; }
+.text-xl   { font-size: 18px; line-height: 1.35; letter-spacing: -0.01em; }
+
+/* ----- The "Kicker" — small uppercase orange eyebrow above
+   section titles. Brand-defining motif on the landing page. */
+.kicker {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* ----- Numeric display — large balance / metric numbers
+   on the dashboard and balance card. Tighter tracking. */
+.numeric-xl {
+  font-family: var(--font-heading);
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.numeric-display {
+  font-family: var(--font-heading);
+  font-size: 2.625rem;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----- Selection & focus — branded orange tint ----- */
+::selection { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+[data-focus-ring="true"] { box-shadow: var(--shadow-focus); }

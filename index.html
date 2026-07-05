@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Бронь · Агрегатор заведений</title>
+<link rel="stylesheet" href="colors_and_type.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #f6f5f2;
+  }
+  body {
+    overflow: hidden;
+  }
+  #root {
+    height: 100vh;
+    min-height: 640px;
+  }
+  .resto-card {
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .resto-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-soft);
+  }
+  .prototype-links {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 80;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .prototype-links a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 36px;
+    padding: 0 13px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.9);
+    color: var(--foreground);
+    box-shadow: var(--shadow-card);
+    font: 700 12px/1 var(--font-heading);
+    text-decoration: none;
+    backdrop-filter: blur(10px);
+  }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.16); border-radius: 9px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  @media (max-width: 1100px) {
+    body { overflow: auto; }
+    #root { width: 1100px; }
+    .prototype-links { position: fixed; }
+  }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<nav class="prototype-links" aria-label="Другие макеты">
+  <a href="mobile.html">Мобильное приложение</a>
+  <a href="web.html">Веб-макет в браузере</a>
+  <a href="Бронь - десктоп (standalone).html">Standalone</a>
+</nav>
+
+<script type="text/babel" src="app/phone.jsx"></script>
+<script type="text/babel" src="app/web-shell.jsx"></script>
+<script type="text/babel" src="app/web-pages.jsx"></script>
+
+<script type="text/babel">
+function App() {
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--primary', '#ff6f09');
+    root.style.setProperty('--ui-radius', '20px');
+    root.style.setProperty('--ui-gap', '10px');
+    root.style.setProperty('--background', '#f6f5f2');
+    root.style.setProperty('--card', '#ffffff');
+  }, []);
+
+  return <window.DesktopApp />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
