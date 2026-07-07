@@ -1,0 +1,7 @@
+rooms-preview/
+rooms-audit-*/
+assets-pages/
+.agents/
+.codex/
+*.tmp
+*.log
