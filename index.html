@@ -645,7 +645,7 @@
   <script>
     const $=id=>document.getElementById(id);
     const cities=["Воронеж","Москва","Санкт-Петербург","Краснодар"];
-    const times=Array.from({length:15},(_,i)=>`${String(i+10).padStart(2,"0")}:00`);
+    const times=[...Array.from({length:14},(_,i)=>`${String(i+10).padStart(2,"0")}:00`),"00:00","01:00","02:00","03:00","04:00","05:00"];
     const store={accounts:"rooms_accounts_v30",session:"rooms_session_v30",bookings:"rooms_bookings_v30",favorites:"rooms_favorites_v30",reviews:"rooms_reviews_v30",partner:"rooms_partner_v30",partnerAuth:"rooms_partner_auth_v30",partnerData:"rooms_partner_data_v30",partnerNotice:"rooms_partner_notice_v30",userNotice:"rooms_user_notice_v30",activity:"rooms_activity_v30"};
     const adminAccess={login:"admin@rooms.ru",password:"rooms2026"};
     const day=n=>{const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
@@ -680,6 +680,11 @@
     function write(k,v){localStorage.setItem(k,JSON.stringify(v))}
     function money(n){return new Intl.NumberFormat("ru-RU").format(n)+" руб."}
     function hour(t){return Number(String(t).slice(0,2))}
+    function hourLabel(h){return `${String(((Number(h)%24)+24)%24).padStart(2,"0")}:00`}
+    function hourSuffix(h){return Number(h)>=24?" +1 день":""}
+    function hourOptionList(value,from=6,to=24){return Array.from({length:to-from+1},(_,i)=>{const h=from+i;return `<option value="${h}" ${Number(value)===h?"selected":""}>${hourLabel(h)}${hourSuffix(h)}</option>`}).join("")}
+    function slotHour(r,t){const h=hour(t);return r?.work?.[1]>24&&h<r.work[0]?h+24:h}
+    function intervalText(a,b){return `${hourLabel(a)}-${hourLabel(b)}${Number(b)>24||Number(a)>=24?" +1 день":""}`}
     function venue(r){return venues.find(v=>v.id===r.venue)}
     function accounts(){return read(store.accounts,[])}
     function current(){const s=read(store.session,null);return s?accounts().find(a=>a.id===s.id):null}
@@ -702,9 +707,13 @@
     function roomTypeSelect(value="lounge"){return roomTypeOptions.map(x=>`<option value="${x.value}" ${x.value===value?"selected":""}>${x.label}</option>`).join("")}
     function roomStatusLabel(status){return status==="hidden"?"скрыто":"опубликовано"}
     function roomStatusSelect(value="published"){return `<option value="published" ${value!=="hidden"?"selected":""}>Опубликовано в каталоге</option><option value="hidden" ${value==="hidden"?"selected":""}>Скрыто из каталога</option>`}
-    function hourOptionList(value,from=6,to=24){return Array.from({length:to-from+1},(_,i)=>{const h=from+i;return `<option value="${h}" ${Number(value)===h?"selected":""}>${String(h).padStart(2,"0")}:00</option>`}).join("")}
-    function workText(work=[10,24]){return `${String(work[0]).padStart(2,"0")}:00-${String(work[1]).padStart(2,"0")}:00`}
-    function isRoomPublic(r){return (r.status||"published")==="published"}
+    function cabinetStatusLabel(status){return status==="paused"?"кабинет на паузе":"кабинет активен"}
+    function publicationStatusLabel(status){return ({published:"площадка опубликована",hidden:"площадка скрыта",review:"на модерации"})[status||"published"]||"площадка опубликована"}
+    function cabinetStatusSelect(value="active"){return `<option value="active" ${value!=="paused"?"selected":""}>Кабинет активен</option><option value="paused" ${value==="paused"?"selected":""}>Кабинет на паузе</option>`}
+    function publicationStatusSelect(value="published"){return [["published","Опубликована на сайте"],["hidden","Скрыта с сайта"],["review","На модерации"]].map(([v,l])=>`<option value="${v}" ${v===(value||"published")?"selected":""}>${l}</option>`).join("")}
+    function workText(work=[10,24]){return intervalText(work[0],work[1])}
+    function isVenuePublished(v){return (v?.publicationStatus||"published")==="published"}
+    function isRoomPublic(r){return (r.status||"published")==="published"&&isVenuePublished(venue(r))}
     const featureOptions=[
       {value:"kids",label:"Детская зона"},
       {value:"karaoke",label:"Караоке"},
@@ -730,7 +739,7 @@
     function defaultPartnerData(){
       const v=venues.find(x=>x.id==="kids-loft");
       const roomMap=Object.fromEntries(rooms.filter(r=>r.venue==="kids-loft").map(r=>[r.id,{id:r.id,type:r.type,status:r.status||"published",title:r.title,subtitle:r.subtitle,capacity:r.capacity,price:r.price,min:r.min,bufferEnabled:false,buffer:30,desc:r.desc,rules:r.rules,images:r.images,features:r.features,tags:r.tags,work:r.work}]));
-      return {venue:{id:"kids-loft",city:v.city,title:v.title,address:v.address,type:"Детский лофт",roomCount:2,contact:"Менеджер Kids Loft",phone:"+7 900 000-00-00",email:"manager@kids-loft.ru",work:[10,24],rules:"Алкоголь и кальян не подходят для детских мероприятий. Еду и торт можно согласовать заранее.",about:v.about,image:v.image},rooms:roomMap,busy:{},manualBusy:{}};
+      return {venue:{id:"kids-loft",city:v.city,title:v.title,address:v.address,type:"Детский лофт",roomCount:2,contact:"Менеджер Kids Loft",phone:"+7 900 000-00-00",email:"manager@kids-loft.ru",cabinetStatus:"active",publicationStatus:"published",work:[10,24],rules:"Алкоголь и кальян не подходят для детских мероприятий. Еду и торт можно согласовать заранее.",about:v.about,image:v.image},rooms:roomMap,busy:{},manualBusy:{}};
     }
     function partnerData(){
       const base=defaultPartnerData(),saved=read(store.partnerData,{})||{},mergedRooms={...base.rooms};
@@ -757,7 +766,7 @@
     }
     function applyPartnerData(){
       const data=partnerData(),v=venues.find(x=>x.id===data.venue.id),num=(value,fallback)=>{const n=Number(value);return Number.isFinite(n)&&n>0?n:fallback};
-      if(v)Object.assign(v,{city:data.venue.city||v.city,title:data.venue.title||v.title,address:data.venue.address||v.address,about:data.venue.about||v.about,image:data.venue.image||v.image,type:data.venue.type||v.type,rules:data.venue.rules||v.rules,work:data.venue.work||v.work,email:data.venue.email||v.email,phone:data.venue.phone||v.phone,contact:data.venue.contact||v.contact});
+      if(v)Object.assign(v,{city:data.venue.city||v.city,title:data.venue.title||v.title,address:data.venue.address||v.address,about:data.venue.about||v.about,image:data.venue.image||v.image,type:data.venue.type||v.type,rules:data.venue.rules||v.rules,work:data.venue.work||v.work,email:data.venue.email||v.email,phone:data.venue.phone||v.phone,contact:data.venue.contact||v.contact,cabinetStatus:data.venue.cabinetStatus||"active",publicationStatus:data.venue.publicationStatus||"published"});
       Object.entries(data.rooms).forEach(([id,item])=>{
         let r=rooms.find(x=>x.id===id);
         const type=item.type||r?.type||"lounge";
@@ -810,9 +819,9 @@
       const rows=(scope==="partner"?partnerBookings(ids):adminBookings()).map(b=>{
         const status=effectiveBookingStatus(b),publicPhone=scope==="admin"||isPrepayPaid(b)?b.phone:"скрыт до предоплаты";
         const base=[b.name,publicPhone,b.date,b.time,b.hours,b.room,b.total||0,statusLabel(status),b.comment||""];
-        return scope==="admin"?[b.venue,b.city,...base,b.prepay||0,Math.round((b.total||0)*.15),b.paymentStatus||""]:base;
+        return scope==="admin"?[b.venue,b.city,...base,b.prepay||0,b.paymentStatus||""]:base;
       });
-      const head=scope==="admin"?["Площадка","Город","Клиент","Телефон","Дата","Время","Часы","Помещение","Сумма","Статус","Комментарий","Предоплата","Комиссия Rooms","Статус оплаты"]:["Клиент","Телефон","Дата","Время","Часы","Помещение","Сумма","Статус","Комментарий"];
+      const head=scope==="admin"?["Площадка","Город","Клиент","Телефон","Дата","Время","Часы","Помещение","Сумма","Статус","Комментарий","Предоплата","Статус оплаты"]:["Клиент","Телефон","Дата","Время","Часы","Помещение","Сумма","Статус","Комментарий"];
       downloadCsv(`rooms-${scope}-bookings-${today}.csv`,[head,...rows]);
       logActivity("export",scope==="admin"?"Экспорт админки":"Экспорт партнёра",`${rows.length} строк`);
       toast("Выгрузка подготовлена в CSV, файл откроется в Excel.");
@@ -891,14 +900,20 @@
     function bufferText(r){return r?.bufferEnabled?`подготовка ${Number(r.buffer)||30} мин`:"подготовка не нужна"}
     function preparationRow(r){return r?.bufferEnabled?`<div class="row"><span class="muted">Подготовка между бронями</span><strong>${Number(r.buffer)||30} минут</strong></div>`:""}
     function bookingBusyBlocks(r,date){
-      return storedBookings().filter(b=>b.roomId===r.id&&b.date===date&&isBlockingBooking(b)).map(b=>[hour(b.time),hour(b.time)+Number(b.hours||1)]);
+      return storedBookings().filter(b=>b.roomId===r.id&&b.date===date&&isBlockingBooking(b)).map(b=>{const start=slotHour(r,b.time);return [start,start+Number(b.hours||1)]});
     }
     function blockHours(blocks){
-      return [...new Set(blocks.flatMap(([a,b])=>Array.from({length:Math.max(0,b-a)},(_,i)=>a+i)))].sort((a,b)=>a-b);
+      const hours=[];
+      blocks.forEach(([a,b])=>{
+        const start=Math.floor(Number(a)),end=Math.ceil(Number(b));
+        for(let h=start;h<end;h++)if(overlaps(h,h+1,Number(a),Number(b)))hours.push(h);
+      });
+      return [...new Set(hours)].sort((a,b)=>a-b);
     }
     function blocked(r,date){return bufferedBlocks(r,[...(r.blocked?.[date]||r.blocked?.default||[]),...partnerBusyBlocks(r,date),...bookingBusyBlocks(r,date)]).sort((a,b)=>a[0]-b[0])}
-    function capacity(r,date,t){const h=hour(t),end=r.work[1];if(h<r.work[0]||h>=end)return 0;let next=end;for(const [a,b] of blocked(r,date)){if(overlaps(h,h+1,a,b))return 0;if(a>=h)next=Math.min(next,a)}return Math.max(0,Math.floor(next-h))}
-    function freeWindows(r,date){const arr=[];for(let h=r.work[0];h<r.work[1];h++){const max=capacity(r,date,`${String(h).padStart(2,"0")}:00`);if(max>=r.min)arr.push({time:`${String(h).padStart(2,"0")}:00`,max})}return arr}
+    function capacityAtHour(r,date,h){const end=r.work[1];if(h<r.work[0]||h>=end)return 0;let next=end;for(const [a,b] of blocked(r,date)){if(overlaps(h,h+1,a,b))return 0;if(a>=h)next=Math.min(next,a)}return Math.max(0,Math.floor(next-h))}
+    function capacity(r,date,t){return capacityAtHour(r,date,slotHour(r,t))}
+    function freeWindows(r,date){const arr=[];for(let h=r.work[0];h<r.work[1];h++){const time=hourLabel(h),max=capacityAtHour(r,date,h);if(max>=r.min)arr.push({time,max})}return arr}
     function betterWindow(r,date,chosen,max){return freeWindows(r,date).filter(w=>w.max>max&&w.time!==chosen).sort((a,b)=>b.max-a.max)[0]}
     function hourWord(n){return n===1?"час":n<5?"часа":"часов"}
     function bookingHourList(r,date,time){
@@ -998,7 +1013,7 @@
         const maxCapacity=Math.max(...g.rooms.map(r=>r.capacity));
         const rating=Math.max(...g.rooms.map(r=>r.rating));
         const reviews=g.rooms.reduce((s,r)=>s+r.reviews,0);
-        const windows=[...new Set(g.rooms.flatMap(r=>freeWindows(r,state.date).slice(0,2).map(w=>w.time)))].sort().slice(0,3);
+        const windows=[...new Set(g.rooms.flatMap(r=>freeWindows(r,state.date).slice(0,2).map(w=>w.time)))].slice(0,3);
         return {...g,rooms:roomsSorted,primary:roomsSorted[0],minPrice,maxCapacity,rating,reviews,windows};
       });
     }
@@ -1294,7 +1309,7 @@
       const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=[...seedReviews,...customReviews()],pending=books.filter(b=>effectiveBookingStatus(b)==="pending").length,confirmed=books.filter(b=>["awaiting_payment","paid"].includes(effectiveBookingStatus(b))).length,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
       const bookingRows=books.map(b=>bookingCard(b,"admin")).join("");
       const leadRows=leads.map(l=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(l.venue)}</h4><p class="muted" style="margin:0">${esc(l.city)} · ${esc(l.address||"адрес уточняется")} · ${esc(l.name||"контакт")} · ${esc(l.phone||"")} ${l.email?`· ${esc(l.email)}`:""}</p></div><span class="status review">${leadStatusLabel(l.status)}</span></div><div class="admin-meta"><span class="tag">${esc(l.type||"тип не указан")}</span><span class="tag">${Number(l.rooms)||1} помещений</span></div><p class="muted" style="margin:9px 0 0">${esc(l.comment||"Комментарий не заполнен")}</p><div class="admin-actions"><button class="btn primary" data-admin-lead="${l.id}|review" type="button">В модерацию</button><button class="btn" data-admin-lead="${l.id}|approved" type="button">Одобрить</button><button class="btn" data-admin-lead="${l.id}|rejected" type="button">Отклонить</button></div></article>`).join("");
-      const roomRows=venues.filter(v=>v.city===state.city||v.city==="Воронеж").map(v=>`<div class="admin-room-row"><div><strong>${esc(v.title)}</strong><div class="muted">${esc(v.address)} · ${rooms.filter(r=>r.venue===v.id).map(r=>r.title).join(", ")||"комнаты не добавлены"}</div></div><span class="status confirmed">опубликовано</span></div>`).join("");
+      const roomRows=venues.filter(v=>v.city===state.city||v.city==="Воронеж").map(v=>{const pub=v.publicationStatus||"published",pubClass=pub==="hidden"?"cancelled":pub==="review"?"review":"confirmed";return `<div class="admin-room-row"><div><strong>${esc(v.title)}</strong><div class="muted">${esc(v.address)} · ${cabinetStatusLabel(v.cabinetStatus)} · ${rooms.filter(r=>r.venue===v.id).map(r=>r.title).join(", ")||"комнаты не добавлены"}</div></div><span class="status ${pubClass}">${publicationStatusLabel(pub)}</span></div>`}).join("");
       openModal(`<div class="admin-dashboard">
         <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. Это v1 на локальных данных, но уже с рабочими статусами.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">К оплате / оплачены</span><strong>${confirmed}</strong></div><div class="dash-card"><span class="muted">Посещения</span><strong>${visitCount}</strong></div><div class="dash-card"><span class="muted">Партнёры</span><strong>${leads.length}</strong></div></div>
@@ -1309,7 +1324,7 @@
         </div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>История действий</h3>${renderActivity(10)}</section>
-          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Комиссия Rooms</h4><p class="muted" style="margin:0">Считаем 15% от полной суммы оплаченных броней. В реальной версии это уйдёт в платежную систему и бухгалтерский отчёт.</p></div></div><div class="admin-meta"><span class="tag">${money(books.filter(isPrepayPaid).reduce((s,b)=>s+(b.total||0)*.15,0))}</span><span class="tag">${books.filter(isPrepayPaid).length} оплат</span></div></article></div></aside>
+          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Оплаты по заявкам</h4><p class="muted" style="margin:0">Показываем внесённые предоплаты и количество оплаченных броней. Детальную экономику лучше держать в закрытом отчёте.</p></div></div><div class="admin-meta"><span class="tag">${money(books.filter(isPrepayPaid).reduce((s,b)=>s+(b.prepay||0),0))}</span><span class="tag">${books.filter(isPrepayPaid).length} оплат</span></div></article></div></aside>
         </div>
         <div class="chips"><button class="btn soft" data-partner-login type="button">Открыть кабинет партнёра</button><button class="btn" data-logout type="button">Выйти</button></div>
       </div>`,false,!keep);
@@ -1319,16 +1334,16 @@
     function renderPartnerCabinet(keep=false){
       const top=E.modalBox.scrollTop,data=partnerData(),ids=partnerRoomIds(data),selected=ids.includes(state.partnerRoom)?state.partnerRoom:ids[0],date=state.partnerDate||state.date||today,room=data.rooms[selected],live=rooms.find(r=>r.id===selected),manualItems=partnerManualItems(selected,date,data);
       const busy=live?blockHours(bufferedBlocks(live,partnerBusyBlocks(live,date))):partnerBusyHours(selected,date,data);
-      const slots=Array.from({length:(live?.work[1]||24)-(live?.work[0]||10)},(_,i)=>(live?.work[0]||10)+i),booked=live?blockHours(bufferedBlocks(live,bookingBusyBlocks(live,date))):[],busyTotal=partnerBusyHoursTotal(data),bookedTotal=booked.length,books=partnerBookings(ids),bookingRows=books.map(b=>bookingCard(b,"partner")).join(""),publishedIds=ids.filter(id=>(data.rooms[id].status||"published")==="published"),rating=(ids.reduce((s,id)=>s+(rooms.find(r=>r.id===id)?.rating||0),0)/Math.max(1,ids.length)).toFixed(1);
+      const slots=Array.from({length:(live?.work[1]||24)-(live?.work[0]||10)},(_,i)=>(live?.work[0]||10)+i),booked=live?blockHours(bufferedBlocks(live,bookingBusyBlocks(live,date))):[],busyTotal=partnerBusyHoursTotal(data),bookedTotal=booked.length,books=partnerBookings(ids),bookingRows=books.map(b=>bookingCard(b,"partner")).join(""),venuePublished=(data.venue.publicationStatus||"published")==="published",publishedIds=venuePublished?ids.filter(id=>(data.rooms[id].status||"published")==="published"):[],rating=(ids.reduce((s,id)=>s+(rooms.find(r=>r.id===id)?.rating||0),0)/Math.max(1,ids.length)).toFixed(1);
       openModal(`<div class="partner-cabinet">
         <div class="partner-title"><span class="kicker">Кабинет партнёра</span><h2>${esc(data.venue.title)}</h2><p class="muted">Здесь площадка редактирует информацию о заведении, помещениях внутри него и отмечает занятость. Занятые часы сразу пропадают из свободных окон для клиента.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="dash-card"><span class="muted">В каталоге</span><strong>${publishedIds.length}</strong></div><div class="dash-card"><span class="muted">Занято вручную</span><strong>${busyTotal}</strong></div><div class="dash-card"><span class="muted">Занято заявками</span><strong>${bookedTotal}</strong></div></div>
-        <div class="chips"><button class="btn soft" data-export="partner" type="button">Экспорт моих заявок CSV</button><span class="muted">${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений</span></div>
+        <div class="chips"><button class="btn soft" data-export="partner" type="button">Экспорт моих заявок CSV</button><span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений</span></div>
         <div class="partner-editor" data-partner-bookings><div class="admin-item-head"><div><h3>Заявки по вашим помещениям</h3><p class="muted" style="margin:0">Подтверждение здесь сразу обновляет админку Rooms и календарь доступности.</p></div><span class="status">${books.filter(b=>(b.status||"pending")==="pending").length} новых</span></div><div class="admin-list" style="margin-top:12px">${bookingRows||`<div class="empty" style="display:block">Заявок по этим комнатам пока нет.</div>`}</div></div>
         <div class="partner-shell">
           <form class="partner-editor" id="partnerVenueEdit">
             <h3>Заведение</h3>
-            <div class="form"><div class="field"><label>Город</label><select name="city">${cities.map(c=>`<option ${c===data.venue.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="field"><label>Название</label><input name="title" value="${esc(data.venue.title)}" required></div><div class="field full"><label>Адрес</label><input name="address" value="${esc(data.venue.address)}" required></div><div class="field"><label>Тип площадки</label><input name="type" value="${esc(data.venue.type||"")}" placeholder="Лофт, детская комната, караоке"></div><div class="field"><label>Помещений внутри</label><input name="roomCount" type="number" min="1" value="${Number(data.venue.roomCount)||ids.length||1}"></div><div class="field"><label>Контактное лицо</label><input name="contact" value="${esc(data.venue.contact||"")}" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" value="${esc(data.venue.phone||"")}" required></div><div class="field"><label>Email партнёра</label><input name="email" type="email" value="${esc(data.venue.email||"")}" placeholder="manager@venue.ru"></div><div class="field"><label>Начало работы</label><select name="venueWorkStart">${hourOptionList((data.venue.work||[10,24])[0])}</select></div><div class="field"><label>Конец работы</label><select name="venueWorkEnd">${hourOptionList((data.venue.work||[10,24])[1])}</select></div><div class="field full"><label>Описание для клиента</label><textarea name="about" required>${esc(data.venue.about)}</textarea></div><div class="field full"><label>Общие правила площадки</label><textarea name="rules" placeholder="Например: ограничения по шуму, еде, алкоголю, депозиту">${esc(data.venue.rules||"")}</textarea></div></div>
+            <div class="form"><div class="field"><label>Город</label><select name="city">${cities.map(c=>`<option ${c===data.venue.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="field"><label>Название</label><input name="title" value="${esc(data.venue.title)}" required></div><div class="field full"><label>Адрес</label><input name="address" value="${esc(data.venue.address)}" required></div><div class="field"><label>Тип площадки</label><input name="type" value="${esc(data.venue.type||"")}" placeholder="Лофт, детская комната, караоке"></div><div class="field"><label>Помещений внутри</label><input name="roomCount" type="number" min="1" value="${Number(data.venue.roomCount)||ids.length||1}"></div><div class="field"><label>Доступ к кабинету</label><select name="cabinetStatus">${cabinetStatusSelect(data.venue.cabinetStatus||"active")}</select></div><div class="field"><label>Публикация на сайте</label><select name="publicationStatus">${publicationStatusSelect(data.venue.publicationStatus||"published")}</select></div><div class="field"><label>Контактное лицо</label><input name="contact" value="${esc(data.venue.contact||"")}" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" value="${esc(data.venue.phone||"")}" required></div><div class="field"><label>Email партнёра</label><input name="email" type="email" value="${esc(data.venue.email||"")}" placeholder="manager@venue.ru"></div><div class="field"><label>Начало работы</label><select name="venueWorkStart">${hourOptionList((data.venue.work||[10,24])[0],0,23)}</select></div><div class="field"><label>Конец работы</label><select name="venueWorkEnd">${hourOptionList((data.venue.work||[10,24])[1],1,30)}</select></div><div class="field full"><label>Описание для клиента</label><textarea name="about" required>${esc(data.venue.about)}</textarea></div><div class="field full"><label>Общие правила площадки</label><textarea name="rules" placeholder="Например: ограничения по шуму, еде, алкоголю, депозиту">${esc(data.venue.rules||"")}</textarea></div></div>
             ${photoManager({type:"venue",images:[data.venue.image]})}
             <div class="partner-actions"><button class="btn primary" type="submit">Сохранить заведение</button></div>
           </form>
@@ -1338,13 +1353,13 @@
             <details class="room-create">
               <summary>Добавить новое помещение</summary>
               <form id="partnerRoomCreate">
-                <div class="form"><div class="field"><label>Название</label><input name="title" placeholder="Например, VIP-комната" required></div><div class="field"><label>Формат для каталога</label><select name="type">${roomTypeSelect("lounge")}</select></div><div class="field"><label>Статус</label><select name="status">${roomStatusSelect("published")}</select></div><div class="field"><label>Вместимость</label><input name="capacity" type="number" min="1" value="8" required></div><div class="field"><label>Цена за час, руб.</label><input name="price" type="number" min="1" value="1500" required></div><div class="field"><label>Минимум часов</label><input name="min" type="number" min="1" max="12" value="2" required></div><div class="field"><label>Подготовка нужна</label><select name="bufferEnabled"><option value="0">Нет</option><option value="1">Да</option></select></div><div class="field"><label>Время подготовки</label><select name="buffer"><option>15</option><option selected>30</option><option>45</option><option>60</option></select></div><div class="field"><label>Начало работы</label><select name="workStart">${hourOptionList(10)}</select></div><div class="field"><label>Конец работы</label><select name="workEnd">${hourOptionList(24)}</select></div><div class="field full"><label>Что есть в помещении</label><div class="chips">${roomFeatureChips(featuresForType("lounge"))}</div></div><div class="field full"><label>Короткое описание</label><textarea name="desc" placeholder="Что это за помещение, для каких событий подходит"></textarea></div></div>
+                <div class="form"><div class="field"><label>Название</label><input name="title" placeholder="Например, VIP-комната" required></div><div class="field"><label>Формат для каталога</label><select name="type">${roomTypeSelect("lounge")}</select></div><div class="field"><label>Статус</label><select name="status">${roomStatusSelect("published")}</select></div><div class="field"><label>Вместимость</label><input name="capacity" type="number" min="1" value="8" required></div><div class="field"><label>Цена за час, руб.</label><input name="price" type="number" min="1" value="1500" required></div><div class="field"><label>Минимум часов</label><input name="min" type="number" min="1" max="12" value="2" required></div><div class="field"><label>Подготовка нужна</label><select name="bufferEnabled"><option value="0">Нет</option><option value="1">Да</option></select></div><div class="field"><label>Время подготовки</label><select name="buffer"><option>15</option><option selected>30</option><option>45</option><option>60</option></select></div><div class="field"><label>Начало работы</label><select name="workStart">${hourOptionList(10,0,23)}</select></div><div class="field"><label>Конец работы</label><select name="workEnd">${hourOptionList(24,1,30)}</select></div><div class="field full"><label>Что есть в помещении</label><div class="chips">${roomFeatureChips(featuresForType("lounge"))}</div></div><div class="field full"><label>Короткое описание</label><textarea name="desc" placeholder="Что это за помещение, для каких событий подходит"></textarea></div></div>
                 <div class="partner-actions"><button class="btn soft" type="submit">Добавить помещение</button></div>
               </form>
             </details>
             <div class="partner-room-list">${ids.map(id=>{const x=data.rooms[id],r=rooms.find(item=>item.id===id),wins=r?freeWindows(r,date).length:0,status=x.status||"published";return `<button class="partner-room-card ${id===selected?"active":""} ${status==="hidden"?"hidden":""}" data-partner-room="${id}" type="button"><strong>${esc(x.title)}</strong><span>${esc(x.subtitle)} · ${roomStatusLabel(status)} · ${workText(x.work||r?.work)} · ${bufferText(r||x)} · до ${x.capacity} гостей · ${money(x.price)}/час · окон: ${wins}</span></button>`}).join("")}</div>
             <form id="partnerRoomEdit" data-room-id="${selected}">
-              <div class="form"><div class="field"><label>Название комнаты</label><input name="title" value="${esc(room.title)}" required></div><div class="field"><label>Формат для каталога</label><select name="type">${roomTypeSelect(room.type||live?.type||"lounge")}</select></div><div class="field"><label>Тип на карточке</label><input name="subtitle" value="${esc(room.subtitle)}" required></div><div class="field"><label>Статус</label><select name="status">${roomStatusSelect(room.status||"published")}</select></div><div class="field"><label>Вместимость</label><input name="capacity" type="number" min="1" value="${room.capacity}" required></div><div class="field"><label>Цена за час, руб.</label><input name="price" type="number" min="1" value="${room.price}" required></div><div class="field"><label>Минимум часов</label><input name="min" type="number" min="1" max="12" value="${room.min}" required></div><div class="field"><label>Подготовка нужна</label><select name="bufferEnabled"><option value="0" ${room.bufferEnabled?"":"selected"}>Нет</option><option value="1" ${room.bufferEnabled?"selected":""}>Да</option></select></div><div class="field"><label>Время подготовки</label><select name="buffer">${[15,30,45,60].map(x=>`<option value="${x}" ${Number(room.buffer||30)===x?"selected":""}>${x} мин</option>`).join("")}</select></div><div class="field"><label>Начало работы</label><select name="workStart">${hourOptionList((room.work||live?.work||[10,24])[0])}</select></div><div class="field"><label>Конец работы</label><select name="workEnd">${hourOptionList((room.work||live?.work||[10,24])[1])}</select></div><div class="field full"><label>Что есть в помещении</label><div class="chips">${roomFeatureChips(room.features||live?.features||featuresForType(room.type||live?.type||"lounge"))}</div></div><div class="field full"><label>Описание</label><textarea name="desc" required>${esc(room.desc)}</textarea></div><div class="field full"><label>Правила и нюансы</label><textarea name="rules" required>${esc(room.rules)}</textarea></div></div>
+              <div class="form"><div class="field"><label>Название комнаты</label><input name="title" value="${esc(room.title)}" required></div><div class="field"><label>Формат для каталога</label><select name="type">${roomTypeSelect(room.type||live?.type||"lounge")}</select></div><div class="field"><label>Тип на карточке</label><input name="subtitle" value="${esc(room.subtitle)}" required></div><div class="field"><label>Статус</label><select name="status">${roomStatusSelect(room.status||"published")}</select></div><div class="field"><label>Вместимость</label><input name="capacity" type="number" min="1" value="${room.capacity}" required></div><div class="field"><label>Цена за час, руб.</label><input name="price" type="number" min="1" value="${room.price}" required></div><div class="field"><label>Минимум часов</label><input name="min" type="number" min="1" max="12" value="${room.min}" required></div><div class="field"><label>Подготовка нужна</label><select name="bufferEnabled"><option value="0" ${room.bufferEnabled?"":"selected"}>Нет</option><option value="1" ${room.bufferEnabled?"selected":""}>Да</option></select></div><div class="field"><label>Время подготовки</label><select name="buffer">${[15,30,45,60].map(x=>`<option value="${x}" ${Number(room.buffer||30)===x?"selected":""}>${x} мин</option>`).join("")}</select></div><div class="field"><label>Начало работы</label><select name="workStart">${hourOptionList((room.work||live?.work||[10,24])[0],0,23)}</select></div><div class="field"><label>Конец работы</label><select name="workEnd">${hourOptionList((room.work||live?.work||[10,24])[1],1,30)}</select></div><div class="field full"><label>Что есть в помещении</label><div class="chips">${roomFeatureChips(room.features||live?.features||featuresForType(room.type||live?.type||"lounge"))}</div></div><div class="field full"><label>Описание</label><textarea name="desc" required>${esc(room.desc)}</textarea></div><div class="field full"><label>Правила и нюансы</label><textarea name="rules" required>${esc(room.rules)}</textarea></div></div>
               ${photoManager({type:"room",roomId:selected,images:room.images||[]})}
               <div class="partner-actions"><button class="btn primary" type="submit">Сохранить помещение</button></div>
             </form>
@@ -1357,8 +1372,8 @@
             <div class="form"><div class="field"><label>Тип занятости</label><select name="type">${busyTypeSelect("manual")}</select></div><div class="field"><label>Начало</label><select name="start">${hourOptionList(live?.work[0]||10,live?.work[0]||10,(live?.work[1]||24)-1)}</select></div><div class="field"><label>Конец</label><select name="end">${hourOptionList(Math.min((live?.work[0]||10)+1,live?.work[1]||24),Math.min((live?.work[0]||10)+1,live?.work[1]||24),live?.work[1]||24)}</select></div><div class="field full"><label>Комментарий</label><input name="comment" placeholder="Например: клиент из WhatsApp, уборка, закрыто на праздник"></div></div>
             <div class="partner-actions"><button class="btn primary" type="submit">Добавить занятость</button></div>
           </form>
-          <div class="availability-grid">${slots.map(h=>{const byBooking=booked.includes(h),item=partnerBusyItemAt(selected,date,h,data),byPartner=busy.includes(h);return `<button class="availability-slot ${byBooking?"booked":byPartner?"busy":""}" ${byBooking?"disabled":`data-busy-toggle="${selected}|${date}|${h}"`} type="button"><strong>${String(h).padStart(2,"0")}:00</strong><span>${byBooking?"заявка":item?busyTypeLabel(item.type):byPartner?"закрыто":"свободно"}</span></button>`}).join("")}</div>
-          <div class="admin-list" style="margin-top:12px">${manualItems.length?manualItems.map(x=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${String(x.start).padStart(2,"0")}:00-${String(x.end).padStart(2,"0")}:00 · ${busyTypeLabel(x.type)}</h4><p class="muted" style="margin:0">${esc(x.comment||"Без комментария")}</p></div><button class="btn" data-busy-delete="${selected}|${date}|${x.id}" type="button">Удалить</button></div></article>`).join(""):`<div class="empty" style="display:block">Ручной занятости на эту дату пока нет.</div>`}</div>
+          <div class="availability-grid">${slots.map(h=>{const byBooking=booked.includes(h),item=partnerBusyItemAt(selected,date,h,data),byPartner=busy.includes(h);return `<button class="availability-slot ${byBooking?"booked":byPartner?"busy":""}" ${byBooking?"disabled":`data-busy-toggle="${selected}|${date}|${h}"`} type="button"><strong>${hourLabel(h)}${hourSuffix(h)}</strong><span>${byBooking?"заявка":item?busyTypeLabel(item.type):byPartner?"закрыто":"свободно"}</span></button>`}).join("")}</div>
+          <div class="admin-list" style="margin-top:12px">${manualItems.length?manualItems.map(x=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${intervalText(x.start,x.end)} · ${busyTypeLabel(x.type)}</h4><p class="muted" style="margin:0">${esc(x.comment||"Без комментария")}</p></div><button class="btn" data-busy-delete="${selected}|${date}|${x.id}" type="button">Удалить</button></div></article>`).join(""):`<div class="empty" style="display:block">Ручной занятости на эту дату пока нет.</div>`}</div>
         </div>
         <div class="partner-editor"><h3>История действий</h3>${renderActivity(8)}</div>
         <div class="chips"><button class="btn" data-partner-logout type="button">Выйти из кабинета</button><a class="btn soft" href="#partner" data-close-modal>Форма для новых площадок</a></div>
@@ -1377,8 +1392,8 @@
     function savePartnerVenue(form){
       const data=partnerData(),fd=new FormData(form);
       const work=[Number(fd.get("venueWorkStart"))||10,Number(fd.get("venueWorkEnd"))||24];
-      if(work[1]<=work[0])return toast("Пока в прототипе конец работы должен быть позже начала. Поддержку закрытия после полуночи добавим отдельным шагом.");
-      data.venue={...data.venue,city:fd.get("city"),title:fd.get("title"),address:fd.get("address"),type:fd.get("type"),roomCount:Number(fd.get("roomCount"))||partnerRoomIds(data).length||1,contact:fd.get("contact"),phone:fd.get("phone"),email:fd.get("email"),work,rules:fd.get("rules"),about:fd.get("about")};
+      if(work[1]<=work[0])return toast("Конец работы должен быть позже начала. Для закрытия после полуночи выберите 01:00 +1 день, 02:00 +1 день и т.д.");
+      data.venue={...data.venue,city:fd.get("city"),title:fd.get("title"),address:fd.get("address"),type:fd.get("type"),roomCount:Number(fd.get("roomCount"))||partnerRoomIds(data).length||1,cabinetStatus:fd.get("cabinetStatus")||"active",publicationStatus:fd.get("publicationStatus")||"published",contact:fd.get("contact"),phone:fd.get("phone"),email:fd.get("email"),work,rules:fd.get("rules"),about:fd.get("about")};
       savePartnerData(data);logActivity("venue_update","Площадка обновила данные",`${data.venue.title} · ${data.venue.city}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Информация о заведении сохранена.");
     }
     function createPartnerRoom(form){
@@ -1386,7 +1401,7 @@
       const title=String(fd.get("title")||"").trim();
       if(!title)return toast("Введите название помещения.");
       const work=[Number(fd.get("workStart"))||10,Number(fd.get("workEnd"))||24];
-      if(work[1]<=work[0])return toast("Конец работы должен быть позже начала.");
+      if(work[1]<=work[0])return toast("Конец работы должен быть позже начала. Для закрытия после полуночи выберите 01:00 +1 день, 02:00 +1 день и т.д.");
       data.rooms[id]={
         id,type,title,status:fd.get("status")||"published",subtitle:roomTypeLabel(type),
         capacity:Number(fd.get("capacity"))||8,
@@ -1407,7 +1422,7 @@
       const data=partnerData(),fd=new FormData(form),id=form.dataset.roomId;
       const type=fd.get("type")||data.rooms[id]?.type||"lounge";
       const work=[Number(fd.get("workStart"))||10,Number(fd.get("workEnd"))||24];
-      if(work[1]<=work[0])return toast("Конец работы должен быть позже начала.");
+      if(work[1]<=work[0])return toast("Конец работы должен быть позже начала. Для закрытия после полуночи выберите 01:00 +1 день, 02:00 +1 день и т.д.");
       data.rooms[id]={...data.rooms[id],type:type,status:fd.get("status")||"published",title:fd.get("title"),subtitle:fd.get("subtitle")||roomTypeLabel(type),capacity:Number(fd.get("capacity")),price:Number(fd.get("price")),min:Number(fd.get("min")),bufferEnabled:fd.get("bufferEnabled")==="1",buffer:Number(fd.get("buffer"))||30,desc:fd.get("desc"),rules:fd.get("rules"),features:fd.getAll("features"),tags:tagsForType(type),work};
       state.partnerRoom=id;savePartnerData(data);logActivity("room_update","Партнёр обновил помещение",`${fd.get("title")} · ${money(Number(fd.get("price"))||0)}/час · ${fd.get("bufferEnabled")==="1"?"подготовка "+(Number(fd.get("buffer"))||30)+" мин":"подготовка не нужна"}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Помещение сохранено.");
     }
@@ -1447,7 +1462,7 @@
       if(blockHours(bufferedBlocks(r,partnerBusyBlocks(r,date))).some(h=>h>=start&&h<end))return toast("Этот интервал уже закрыт вручную или попадает в буфер.");
       data.manualBusy={...(data.manualBusy||{})};
       data.manualBusy[key]=[...(data.manualBusy[key]||[]),{id:`M-${Date.now().toString(36)}`,type,start,end,comment}].sort((a,b)=>a.start-b.start);
-      state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity("busy_create","Партнёр добавил занятость",`${r.title} · ${date} · ${String(start).padStart(2,"0")}:00-${String(end).padStart(2,"0")}:00 · ${busyTypeLabel(type)}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Ручная занятость добавлена.");
+      state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity("busy_create","Партнёр добавил занятость",`${r.title} · ${date} · ${intervalText(start,end)} · ${busyTypeLabel(type)}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Ручная занятость добавлена.");
     }
     function deletePartnerManualBusy(payload){
       const [id,date,itemId]=payload.split("|"),data=partnerData(),key=busyKey(id,date);
@@ -1465,7 +1480,7 @@
         data.manualBusy={...(data.manualBusy||{})};
         data.manualBusy[key]=(data.manualBusy[key]||[]).filter(x=>x.id!==item.id);
         if(!data.manualBusy[key].length)delete data.manualBusy[key];
-        state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity("busy_delete","Партнёр удалил интервал из сетки",`${r?.title||id} · ${date} · ${String(h).padStart(2,"0")}:00`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Интервал ручной занятости удалён.");
+        state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity("busy_delete","Партнёр удалил интервал из сетки",`${r?.title||id} · ${date} · ${hourLabel(h)}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Интервал ручной занятости удалён.");
         return;
       }
       const hadLegacy=set.has(h);
@@ -1476,7 +1491,7 @@
       }
       data.busy[key]=[...set].sort((a,b)=>a-b);
       if(!data.busy[key].length)delete data.busy[key];
-      state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity(hadLegacy?"busy_open":"busy_quick","Партнёр изменил слот занятости",`${r?.title||id} · ${date} · ${String(h).padStart(2,"0")}:00`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast(hadLegacy?"Слот снова свободен.":"Слот отмечен занятым.");
+      state.partnerRoom=id;state.partnerDate=date;savePartnerData(data);logActivity(hadLegacy?"busy_open":"busy_quick","Партнёр изменил слот занятости",`${r?.title||id} · ${date} · ${hourLabel(h)}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast(hadLegacy?"Слот снова свободен.":"Слот отмечен занятым.");
     }
     function setPartnerDayBusy(payload){
       const [id,date,mode]=payload.split("|"),data=partnerData(),r=rooms.find(x=>x.id===id),key=busyKey(id,date);
