@@ -463,6 +463,18 @@
     .partner-alert span{display:block;color:var(--muted);font-size:13px;line-height:1.45}
     .partner-alert .notice-row{display:flex;align-items:flex-start;gap:10px}
     .notice-dot{width:10px;height:10px;margin-top:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 6px rgba(97,75,66,.08)}
+    .notification-list{display:grid;gap:9px;margin-top:14px}
+    .notification-item{
+      width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:start;
+      border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);padding:12px;text-align:left;
+      transition:.18s ease;
+    }
+    .notification-item:hover{border-color:#e1b5a7;background:var(--paper-2)}
+    .notification-item .notice-dot{margin-top:5px;opacity:.22;box-shadow:none}
+    .notification-item.unread .notice-dot{opacity:1;box-shadow:0 0 0 5px rgba(184,95,77,.1)}
+    .notification-item strong{display:block;font-size:14px}
+    .notification-item span{display:block;margin-top:4px;color:var(--muted);font-size:12px;line-height:1.4}
+    .notification-item time{color:var(--muted);font-size:11px;white-space:nowrap}
     @keyframes noticeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
     @media(prefers-reduced-motion:reduce){
       *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
@@ -503,6 +515,8 @@
       .favorite-item{grid-template-columns:92px minmax(0,1fr);gap:10px}
       .favorite-item img{width:92px;height:92px}
       .favorite-actions{grid-column:1/-1;margin-top:0}
+      .notification-item{grid-template-columns:auto minmax(0,1fr)}
+      .notification-item time{grid-column:2;white-space:normal}
       .section h2{font-size:27px}
       .photo img{height:220px}
       .modal{padding:10px}
@@ -1151,7 +1165,7 @@
     function userNoticeKey(acc=current()){return phone(acc?.phone)}
     function currentUserNotice(){
       const key=userNoticeKey();
-      return key?(userNotices()[key]||{unread:0,lastId:"",lastStatus:""}):{unread:0,lastId:"",lastStatus:""};
+      return key?(userNotices()[key]||{unread:0,lastId:"",lastStatus:"",items:[]}):{unread:0,lastId:"",lastStatus:"",items:[]};
     }
     function saveCurrentUserNotice(data){
       const key=userNoticeKey();if(!key)return;
@@ -1166,6 +1180,19 @@
     function latestUserNoticeBooking(){
       const notice=currentUserNotice();
       return notice.lastId?read(store.bookings,[]).find(b=>b.id===notice.lastId):null;
+    }
+    function currentUserNoticeItems(){
+      const notice=currentUserNotice();
+      if(Array.isArray(notice.items)&&notice.items.length)return notice.items;
+      const b=latestUserNoticeBooking();
+      return b?[{id:`legacy-${b.id}`,bookingId:b.id,status:notice.lastStatus||b.status,room:b.room,venue:b.venue,date:b.date,time:b.time,created:notice.updated||b.created||new Date().toISOString(),read:!notice.unread}]:[];
+    }
+    function userNoticeTitle(status){
+      return ({proposed:"Площадка предложила другое время",awaiting_payment:"Время подтверждено",confirmed:"Время подтверждено",paid:"Предоплата получена",visited:"Посещение завершено",completed:"Посещение завершено",cancelled:"Бронь отменена",expired:"Время оплаты истекло"})[status]||"Статус брони изменён";
+    }
+    function markCurrentUserNoticesRead(){
+      const notice=currentUserNotice(),items=currentUserNoticeItems();
+      saveCurrentUserNotice({...notice,unread:0,items:items.map(x=>({...x,read:true}))});
     }
     function showPendingUserNotice(){
       const notice=currentUserNotice(),b=notice.unread?latestUserNoticeBooking():null;
@@ -1183,16 +1210,24 @@
     }
     function notifyUserBooking(b,status){
       const key=phone(b.phone);if(!key||status==="pending")return;
-      const all=userNotices(),prev=all[key]||{unread:0};
-      all[key]={unread:(prev.unread||0)+1,lastId:b.id,lastStatus:status,updated:new Date().toISOString()};
+      const all=userNotices(),prev=all[key]||{unread:0,items:[]},created=new Date().toISOString();
+      const item={id:`N-${Date.now().toString(36)}`,bookingId:b.id,status,room:b.room,venue:b.venue,date:b.proposal?.date||b.date,time:b.proposal?.time||b.time,created,read:false};
+      all[key]={...prev,unread:(prev.unread||0)+1,lastId:b.id,lastStatus:status,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,30)};
       saveUserNotices(all);
       const acc=current();
       if(acc&&!isAdmin(acc)&&phone(acc.phone)===key)showUserNotice(b,status);
       updateNoticeBadge();
     }
+    function renderUserNotifications(){
+      const acc=current();if(!acc||isAdmin(acc))return renderAuth();
+      const items=currentUserNoticeItems();
+      markCurrentUserNoticesRead();
+      const rows=items.map(x=>`<button class="notification-item ${x.read?"":"unread"}" data-user-notice="${esc(x.bookingId)}" type="button"><span class="notice-dot"></span><span><strong>${esc(userNoticeTitle(x.status))}</strong><span>${esc(x.venue||"Rooms")} · ${esc(x.room||"помещение")} · ${esc(x.date||"")} ${x.time?`в ${esc(x.time)}`:""}</span></span><time>${new Date(x.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></button>`).join("");
+      openModal(`<div class="admin-item-head"><div><span class="kicker">Личный кабинет</span><h2 style="margin:4px 0 6px">Уведомления</h2><p class="muted" style="margin:0">Изменения по вашим заявкам и оплатам.</p></div><button class="btn" data-profile-back type="button">Назад</button></div><div class="notification-list">${rows||`<div class="empty" style="display:block">Уведомлений пока нет.</div>`}</div>`,true);
+    }
     function openProfileBookings(){
       E.partnerAlert.classList.remove("show");
-      saveCurrentUserNotice({...currentUserNotice(),unread:0});
+      markCurrentUserNoticesRead();
       if(!current()){renderAuth();updateNoticeBadge();return}
       const noticed=latestUserNoticeBooking();
       profileBookingFilter=noticed?profileBookingGroup(noticed):"active";
@@ -1398,7 +1433,7 @@
       const filtered=profileBookingFilter==="all"?books:books.filter(b=>profileBookingGroup(b)===profileBookingFilter);
       const emptyText=books.length?`В разделе «${({active:"Активные",completed:"Завершённые",cancelled:"Отменённые"})[profileBookingFilter]||"Все"}» заявок пока нет.`:"Пока заявок нет. Выберите помещение и отправьте бронь.";
       const filters=[["active","Активные",counts.active],["completed","Завершённые",counts.completed],["cancelled","Отменённые",counts.cancelled],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${profileBookingFilter===id?"active":""}" data-profile-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
-      openModal(`<div class="profile-head"><div class="avatar">${esc((acc.name||"R").slice(0,1).toUpperCase())}</div><div><h2 style="margin:0">${esc(acc.name||"Профиль")}</h2><span class="muted">${esc(acc.email||"Почту можно добавить позже")} · ${esc(acc.phone||"")}</span></div></div>${!acc.email?`<div class="profile-block" style="background:#fff7e8;border-color:#f0d9ad"><strong style="font-size:16px;margin:0">Укажите почту, чтобы получать подтверждения брони</strong></div>`:""}<div class="profile-grid"><div class="profile-block"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="profile-block"><span class="muted">Избранное</span><strong>${fav.size}</strong></div><div class="profile-block"><span class="muted">Город</span><strong style="font-size:18px">${esc(acc.city||state.city)}</strong></div><div class="profile-block"><span class="muted">Бонусы</span><strong>0</strong></div></div><div class="profile-block"><button class="profile-row profile-row-button" data-profile-favorites type="button"><span>Любимое</span><span>›</span></button><button class="profile-row profile-row-button" data-profile-personal type="button"><span>Личные данные</span><span>›</span></button></div><div class="profile-block" data-profile-bookings><h3 style="margin:0">Мои заявки</h3><div class="booking-filters">${filters}</div><div class="admin-list">${filtered.length?filtered.map(b=>bookingCard(b,"profile")).join(""):`<p class="muted" style="margin:0">${emptyText}</p>`}</div></div><div class="chips"><button class="btn" data-logout type="button">Выйти</button><button class="btn soft" data-partner-login type="button">Вход для партнёров</button></div>`,true,!focusBookings);
+      openModal(`<div class="profile-head"><div class="avatar">${esc((acc.name||"R").slice(0,1).toUpperCase())}</div><div><h2 style="margin:0">${esc(acc.name||"Профиль")}</h2><span class="muted">${esc(acc.email||"Почту можно добавить позже")} · ${esc(acc.phone||"")}</span></div></div>${!acc.email?`<div class="profile-block" style="background:#fff7e8;border-color:#f0d9ad"><strong style="font-size:16px;margin:0">Укажите почту, чтобы получать подтверждения брони</strong></div>`:""}<div class="profile-grid"><div class="profile-block"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="profile-block"><span class="muted">Избранное</span><strong>${fav.size}</strong></div><div class="profile-block"><span class="muted">Город</span><strong style="font-size:18px">${esc(acc.city||state.city)}</strong></div><div class="profile-block"><span class="muted">Бонусы</span><strong>0</strong></div></div><div class="profile-block"><button class="profile-row profile-row-button" data-profile-notifications type="button"><span>Уведомления</span><span>${Number(currentUserNotice().unread||0)||"›"}</span></button><button class="profile-row profile-row-button" data-profile-favorites type="button"><span>Любимое</span><span>›</span></button><button class="profile-row profile-row-button" data-profile-personal type="button"><span>Личные данные</span><span>›</span></button></div><div class="profile-block" data-profile-bookings><h3 style="margin:0">Мои заявки</h3><div class="booking-filters">${filters}</div><div class="admin-list">${filtered.length?filtered.map(b=>bookingCard(b,"profile")).join(""):`<p class="muted" style="margin:0">${emptyText}</p>`}</div></div><div class="chips"><button class="btn" data-logout type="button">Выйти</button><button class="btn soft" data-partner-login type="button">Вход для партнёров</button></div>`,true,!focusBookings);
       if(focusBookings)requestAnimationFrame(()=>document.querySelector("[data-profile-bookings]")?.scrollIntoView({behavior:"smooth",block:"start"}));
     }
     function renderAdminDashboard(keep=false){
@@ -1650,12 +1685,12 @@
       if(!b||!r||!p)return toast("Предложение не найдено.");
       if(capacity(r,p.date,p.time)<Number(p.hours)){return toast("Это окно уже занято. Площадка предложит другое время.")}
       list=list.map(x=>x.id===id?{...x,date:p.date,time:p.time,hours:Number(p.hours),total:p.total||r.price*Number(p.hours),prepay:p.prepay||Math.ceil(r.price*Number(p.hours)*.3),status:"awaiting_payment",paymentStatus:"pending",paymentDueAt:new Date(Date.now()+15*60*1000).toISOString(),proposal:null,proposalAcceptedAt:new Date().toISOString()}:x);
-      saveAdminBookings(list);logActivity("proposal_accept","Клиент принял новое время",`${b.id} · ${p.date} ${p.time} · ${p.hours} ч`,"client");hydrate();saveCurrentUserNotice({...currentUserNotice(),unread:0});renderProfile();toast("Время принято. Теперь можно внести предоплату.");
+      saveAdminBookings(list);logActivity("proposal_accept","Клиент принял новое время",`${b.id} · ${p.date} ${p.time} · ${p.hours} ч`,"client");hydrate();markCurrentUserNoticesRead();renderProfile();toast("Время принято. Теперь можно внести предоплату.");
     }
     function declineProposal(id){
       let list=read(store.bookings,[]);if(!list.find(x=>x.id===id))return toast("Предложение не найдено.");
       list=list.map(x=>x.id===id?{...x,status:"pending",proposal:null,proposalDeclinedAt:new Date().toISOString()}:x);
-      saveAdminBookings(list);logActivity("proposal_decline","Клиент отклонил предложенное время",id,"client");hydrate();saveCurrentUserNotice({...currentUserNotice(),unread:0});renderProfile();toast("Предложение отклонено. Заявка вернулась в новые.");
+      saveAdminBookings(list);logActivity("proposal_decline","Клиент отклонил предложенное время",id,"client");hydrate();markCurrentUserNoticesRead();renderProfile();toast("Предложение отклонено. Заявка вернулась в новые.");
     }
     function renderCancelBooking(payload){
       const [id,actor="admin",after="admin"]=payload.split("|"),b=adminBookings().find(x=>x.id===id);
@@ -1772,6 +1807,11 @@
       write(store.accounts,accounts().map(a=>a.id===acc.id?updated:a));
       const list=read(store.bookings,[]);
       if(list.length)write(store.bookings,list.map(b=>phone(b.phone)===phone(acc.phone)?{...b,phone:ph,name}:b));
+      const oldKey=phone(acc.phone);
+      if(oldKey!==ph){
+        const notices=userNotices();
+        if(notices[oldKey]){notices[ph]=notices[oldKey];delete notices[oldKey];saveUserNotices(notices)}
+      }
       selectCity(city,false);logActivity("profile_update","Клиент обновил личные данные",`${name} · ${city}`,"client");hydrate();renderProfile();toast("Личные данные сохранены.");
     }
     function selectCity(city,render=true){
@@ -1806,7 +1846,7 @@
     E.age.addEventListener("change",()=>{syncAdult();renderCatalog()});
     E.chips.addEventListener("change",()=>renderCatalog());
     E.cityButton.addEventListener("click",renderCityPicker);
-    E.noticeButton.addEventListener("click",()=>currentUserNotice().unread?openProfileBookings():partnerNotice().unread?openPartnerBookings():toast("Уведомлений пока нет."));
+    E.noticeButton.addEventListener("click",()=>current()&&!isAdmin()?renderUserNotifications():partnerNotice().unread?openPartnerBookings():toast("Уведомлений пока нет."));
     E.accountButton.addEventListener("click",()=>current()?renderProfile():renderAuth());
     E.partnerEntry.addEventListener("click",openPartner);
     E.partnerAlert.addEventListener("click",handleNoticeClick);
@@ -1843,9 +1883,11 @@
       const card=e.target.closest("[data-open-venue]");if(card&&!e.target.closest("button,a,input,select,textarea,label")){renderSpace(card.dataset.openVenue);return}
       if(e.target.closest("[data-auth='login']"))renderAuth("login");
       if(e.target.closest("[data-auth='register']"))renderAuth("register");
+      if(e.target.closest("[data-profile-notifications]"))renderUserNotifications();
       if(e.target.closest("[data-profile-favorites]"))renderFavorites();
       if(e.target.closest("[data-profile-personal]"))renderPersonalData();
       if(e.target.closest("[data-profile-back]"))renderProfile();
+      const userNotice=e.target.closest("[data-user-notice]");if(userNotice){const b=read(store.bookings,[]).find(x=>x.id===userNotice.dataset.userNotice);if(!b){toast("Заявка из уведомления больше недоступна.");return}profileBookingFilter=profileBookingGroup(b);renderProfile(true);return}
       if(e.target.closest("[data-partner-login]"))renderPartnerLogin();
       if(e.target.closest("[data-logout]")){localStorage.removeItem(store.session);hydrate();closeModal();toast("Вы вышли.")}
       if(e.target.closest("[data-partner-logout]")){localStorage.removeItem(store.partnerAuth);updateNoticeBadge();closeModal();toast("Вы вышли из кабинета партнёра.")}
