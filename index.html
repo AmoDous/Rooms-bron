@@ -140,7 +140,25 @@
       width:100%;min-height:46px;border:1px solid #dec8bf;border-radius:12px;background:#fff;color:var(--ink);
       padding:0 13px;outline:none;
     }
-    input[type="date"]{display:block;min-width:0;max-width:100%}
+    input[type="date"]{display:block;inline-size:100%;min-inline-size:0;max-inline-size:100%;-webkit-appearance:none;appearance:none}
+    .date-control{
+      position:relative;width:100%;min-width:0;max-width:100%;height:46px;overflow:hidden;
+      border:1px solid #dec8bf;border-radius:12px;background:#fff;color:var(--ink);
+    }
+    .date-control:focus-within{border-color:var(--green-2);box-shadow:0 0 0 4px rgba(213,120,101,.16)}
+    .date-display{
+      min-width:0;height:100%;display:flex;align-items:center;padding:0 38px 0 13px;
+      color:var(--ink);white-space:nowrap;pointer-events:none;
+    }
+    .date-control::after{
+      content:"";position:absolute;right:17px;top:17px;width:8px;height:8px;pointer-events:none;
+      border-right:2px solid var(--ink);border-bottom:2px solid var(--ink);transform:rotate(45deg);
+    }
+    .date-control input[type="date"]{
+      position:absolute;inset:0;width:100%;min-width:0;max-width:100%;height:100%;min-height:0;
+      border:0;border-radius:0;padding:0;opacity:0;cursor:pointer;
+    }
+    .date-control input[type="date"]:focus{box-shadow:none}
     textarea{min-height:104px;padding:13px;resize:vertical}
     input:focus,select:focus,textarea:focus{border-color:var(--green-2);box-shadow:0 0 0 4px rgba(213,120,101,.16)}
     .advanced-row{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
@@ -528,7 +546,10 @@
             </div>
             <div class="field">
               <label for="date">Дата</label>
-              <input id="date" type="date">
+              <div class="date-control">
+                <span class="date-display" id="dateDisplay">Выберите дату</span>
+                <input id="date" type="date">
+              </div>
             </div>
             <div class="field">
               <label for="time">Время</label>
@@ -683,13 +704,18 @@
       {room:"voice-vip",name:"Ольга",rating:4,date:"май 2026",text:"Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось."},
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
-    const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
+    const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
     let state={city:"Воронеж",type:"any",date:today,time:"12:00",hours:3,guests:8,age:"any",features:[]},last=[];
 
     function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
     function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f}catch{return f}}
     function write(k,v){localStorage.setItem(k,JSON.stringify(v))}
     function money(n){return new Intl.NumberFormat("ru-RU").format(n)+" руб."}
+    function dateLabel(value){
+      const [y,m,d]=String(value||"").split("-").map(Number);
+      return y&&m&&d?new Intl.DateTimeFormat("ru-RU").format(new Date(y,m-1,d)):"Выберите дату";
+    }
+    function syncDateDisplay(){if(E.dateDisplay)E.dateDisplay.textContent=dateLabel(E.date.value)}
     function hour(t){return Number(String(t).slice(0,2))}
     function hourLabel(h){return `${String(((Number(h)%24)+24)%24).padStart(2,"0")}:00`}
     function hourSuffix(h){return Number(h)>=24?" +1 день":""}
@@ -1687,7 +1713,7 @@
     function reset(){
       E.spaceType.value="any";E.date.value=today;E.time.value="12:00";E.hours.value="3";E.guests.value="8";E.age.value="any";
       E.chips.querySelectorAll("input").forEach(i=>i.checked=false);E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.remove("active"));
-      syncAdult();renderCatalog();
+      syncDateDisplay();syncAdult();renderCatalog();
     }
     function syncAdult(){
       const adult=E.age.value==="adult";
@@ -1697,7 +1723,7 @@
       applyPartnerData();
       applyVenueAdminState();
       E.time.innerHTML=times.map(t=>`<option ${t===state.time?"selected":""}>${t}</option>`).join("");
-      E.date.min=today;E.date.value=state.date||today;E.searchCity.value=state.city;E.spaceType.value=state.type;E.hours.value=String(state.hours);E.guests.value=state.guests;E.age.value=state.age;
+      E.date.min=today;E.date.value=state.date||today;syncDateDisplay();E.searchCity.value=state.city;E.spaceType.value=state.type;E.hours.value=String(state.hours);E.guests.value=state.guests;E.age.value=state.age;
       E.accountButton.textContent=current()?(isAdmin()?"Админка":"Профиль"):"Войти";selectCity(state.city,false);syncAdult();renderCatalog();
       updateNoticeBadge();
     }
@@ -1707,6 +1733,7 @@
     E.resetButton.addEventListener("click",reset);
     E.advancedToggle.addEventListener("click",()=>E.advancedRow.classList.toggle("open"));
     E.searchCity.addEventListener("change",()=>selectCity(E.searchCity.value));
+    E.date.addEventListener("change",syncDateDisplay);
     E.sort.addEventListener("change",()=>renderCatalog());
     E.age.addEventListener("change",()=>{syncAdult();renderCatalog()});
     E.chips.addEventListener("change",()=>renderCatalog());
