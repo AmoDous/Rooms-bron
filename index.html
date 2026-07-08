@@ -30,6 +30,7 @@
       --radius:18px;
     }
     *{box-sizing:border-box}
+    [hidden]{display:none!important}
     html{scroll-behavior:smooth}
     body{
       margin:0;
@@ -190,7 +191,25 @@
     .scenario strong{display:block;font-size:18px;margin-bottom:8px}
     .scenario-copy{display:block;color:var(--muted);font-size:13px;line-height:1.45}
     .catalog-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+    .catalog-tool-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .catalog-tool-actions select{width:auto;min-width:230px;flex:1}
+    .view-toggle{display:flex;border:1px solid var(--line);border-radius:12px;background:#fff;padding:3px}
+    .view-toggle button{min-height:38px;border:0;border-radius:9px;background:transparent;color:var(--muted);padding:0 12px;font-weight:850}
+    .view-toggle button.active{background:var(--mint);color:var(--green)}
     .cards{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;align-items:start}
+    .catalog-map{
+      display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:12px;
+      border:1px solid var(--line);border-radius:20px;background:#fff;padding:12px;box-shadow:var(--soft);
+    }
+    .catalog-map-frame{overflow:hidden;min-height:520px;border-radius:14px;background:var(--mint)}
+    .catalog-map-frame iframe{width:100%;height:100%;min-height:520px;display:block;border:0}
+    .map-place-list{display:grid;align-content:start;gap:8px;max-height:520px;overflow:auto;padding-right:3px}
+    .map-place{border:1px solid var(--line);border-radius:14px;background:#fff;padding:10px}
+    .map-place.active{border-color:#d9a293;background:var(--paper-2)}
+    .map-place-main{width:100%;border:0;background:transparent;color:var(--ink);padding:0;text-align:left}
+    .map-place-main strong{display:block;font-size:15px}
+    .map-place-main span{display:block;margin-top:4px;color:var(--muted);font-size:12px;line-height:1.4}
+    .map-place .btn{width:100%;min-height:36px;margin-top:9px}
     .venue-card{
       grid-column:span 4;overflow:hidden;text-align:left;padding:0;border:1px solid rgba(255,255,255,.68);border-radius:24px;
       background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,250,247,.92));
@@ -532,6 +551,11 @@
       .scenario strong{color:var(--ink)}
       .search-dock{width:100%;min-width:0}
       .admin-item-head{flex-wrap:wrap}
+      .catalog-tools{align-items:flex-start;flex-direction:column}
+      .catalog-tool-actions{width:100%;justify-content:space-between}
+      .catalog-map{grid-template-columns:1fr}
+      .catalog-map-frame,.catalog-map-frame iframe{min-height:320px}
+      .map-place-list{max-height:none}
       .favorite-item{grid-template-columns:92px minmax(0,1fr);gap:10px}
       .favorite-item img{width:92px;height:92px}
       .favorite-actions{grid-column:1/-1;margin-top:0}
@@ -686,9 +710,10 @@
         </div>
         <div class="catalog-tools">
           <span class="muted" id="countText"></span>
-          <select id="sortMode"><option value="rating">Сначала высокий рейтинг</option><option value="capacity">Сначала вместительные</option><option value="price">Сначала дешевле</option></select>
+          <div class="catalog-tool-actions"><div class="view-toggle" aria-label="Вид каталога"><button class="active" data-catalog-view="list" type="button">Список</button><button data-catalog-view="map" type="button">Карта</button></div><select id="sortMode"><option value="rating">Сначала высокий рейтинг</option><option value="capacity">Сначала вместительные</option><option value="price">Сначала дешевле</option></select></div>
         </div>
         <div class="cards" id="results"></div>
+        <div class="catalog-map" id="catalogMap" hidden></div>
         <div class="empty" id="empty">Под эти фильтры пока ничего не нашли. Попробуйте другой тип, время или город.</div>
       </div>
     </section>
@@ -766,8 +791,8 @@
       {room:"voice-vip",name:"Ольга",rating:4,date:"май 2026",text:"Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось."},
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
-    const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
-    let state={city:"Воронеж",type:"any",date:today,time:"12:00",hours:3,guests:8,age:"any",features:[]},last=[],profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new";
+    const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),catalogMap:$("catalogMap"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
+    let state={city:"Воронеж",type:"any",date:today,time:"12:00",hours:3,guests:8,age:"any",features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new";
 
     function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
     function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f}catch{return f}}
@@ -1155,11 +1180,27 @@
       arr=sortRooms(arr);
       last=arr;
       const groups=venueSummaries(arr);
+      lastGroups=groups;
       E.results.innerHTML=groups.map(venueCard).join("");
       E.empty.style.display=groups.length?"none":"block";
       E.count.textContent=groups.length?`${groups.length} ${groups.length===1?"площадка":"площадки"} · ${arr.length} ${arr.length===1?"помещение":"помещений"}`:"";
       E.intro.textContent=seed?`Сценарий выбран. Показываем площадки в городе ${f.city}.`:`Показываем площадки в городе ${f.city}.`;
       document.querySelector("#catalog h2").textContent=`Популярные помещения в ${f.city}`;
+      renderCatalogView();
+    }
+    function renderCatalogView(){
+      const mapMode=catalogView==="map";
+      E.results.hidden=mapMode;E.catalogMap.hidden=!mapMode;
+      E.empty.style.display=!lastGroups.length&&!mapMode?"block":"none";
+      document.querySelectorAll("[data-catalog-view]").forEach(b=>b.classList.toggle("active",b.dataset.catalogView===catalogView));
+      if(mapMode)renderCatalogMap();
+    }
+    function renderCatalogMap(){
+      if(!lastGroups.length){E.catalogMap.innerHTML=`<div class="empty" style="display:block;grid-column:1/-1">На карте пока нечего показывать. Измените фильтры поиска.</div>`;return}
+      const ids=new Set(lastGroups.map(g=>g.venue.id));
+      if(!ids.has(catalogMapVenueId))catalogMapVenueId=lastGroups[0].venue.id;
+      const selected=lastGroups.find(g=>g.venue.id===catalogMapVenueId)||lastGroups[0];
+      E.catalogMap.innerHTML=`<div class="catalog-map-frame"><iframe loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="${mapUrl(selected.venue)}" title="Карта ${esc(selected.venue.title)}"></iframe></div><div class="map-place-list">${lastGroups.map(g=>`<article class="map-place ${g.venue.id===catalogMapVenueId?"active":""}"><button class="map-place-main" data-map-venue="${g.venue.id}" type="button"><strong>${esc(g.venue.title)}</strong><span>${esc(g.venue.address)} · ${g.rooms.length} помещений · от ${money(g.minPrice)} / час</span></button><button class="btn ${g.venue.id===catalogMapVenueId?"primary":""}" data-open-room="${g.primary.id}" type="button">Открыть площадку</button></article>`).join("")}</div>`;
     }
     function venueCard(g){
       const fav=favorites().has(g.primary.id);
@@ -1935,6 +1976,8 @@
     document.addEventListener("click",e=>{
       const city=e.target.closest("[data-city-choice]");if(city){selectCity(city.dataset.cityChoice);closeModal();toast(`Город поиска: ${city.dataset.cityChoice}`);return}
       const scenario=e.target.closest("[data-scenario]");if(scenario){E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.toggle("active",b===scenario));E.spaceType.value=scenario.dataset.scenario;renderCatalog(scenario.dataset.scenario);document.getElementById("catalog").scrollIntoView({behavior:"smooth"});return}
+      const catalogViewButton=e.target.closest("[data-catalog-view]");if(catalogViewButton){catalogView=catalogViewButton.dataset.catalogView;renderCatalogView();return}
+      const mapVenue=e.target.closest("[data-map-venue]");if(mapVenue){catalogMapVenueId=mapVenue.dataset.mapVenue;renderCatalogMap();return}
       const galleryDir=e.target.closest("[data-gallery-dir]");if(galleryDir){moveGallery(galleryDir.closest("[data-gallery]"),Number(galleryDir.dataset.galleryDir));return}
       const galleryJump=e.target.closest("[data-gallery-jump]");if(galleryJump){jumpGallery(galleryJump);return}
       const partnerRoom=e.target.closest("[data-partner-room]");if(partnerRoom){state.partnerRoom=partnerRoom.dataset.partnerRoom;renderPartnerCabinet(true);return}
