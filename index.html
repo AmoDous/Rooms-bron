@@ -196,7 +196,7 @@
     .view-toggle{display:flex;border:1px solid var(--line);border-radius:12px;background:#fff;padding:3px}
     .view-toggle button{min-height:38px;border:0;border-radius:9px;background:transparent;color:var(--muted);padding:0 12px;font-weight:850}
     .view-toggle button.active{background:var(--mint);color:var(--green)}
-    .cards{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;align-items:start}
+    .cards{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;align-items:stretch}
     .catalog-map{
       display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:12px;
       border:1px solid var(--line);border-radius:20px;background:#fff;padding:12px;box-shadow:var(--soft);
@@ -211,7 +211,7 @@
     .map-place-main span{display:block;margin-top:4px;color:var(--muted);font-size:12px;line-height:1.4}
     .map-place .btn{width:100%;min-height:36px;margin-top:9px}
     .venue-card{
-      grid-column:span 4;overflow:hidden;text-align:left;padding:0;border:1px solid rgba(255,255,255,.68);border-radius:24px;
+      grid-column:span 4;display:flex;flex-direction:column;height:100%;overflow:hidden;text-align:left;padding:0;border:1px solid rgba(255,255,255,.68);border-radius:24px;
       background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,250,247,.92));
       box-shadow:0 14px 38px rgba(78,42,31,.08);transition:transform .22s ease, box-shadow .22s ease, border-color .22s ease;
     }
@@ -222,19 +222,19 @@
     .venue-card:hover{transform:translateY(-5px);border-color:#ecd3ca;box-shadow:0 30px 70px rgba(78,42,31,.14)}
     .photo{position:relative;overflow:hidden;background:#efe3dd}
     .photo img{width:100%;height:250px;display:block;object-fit:cover;transition:transform .32s ease}
-    .venue-card:nth-child(3n+3) .photo img{height:220px}
     .venue-card:hover .photo img{transform:scale(1.025)}
     .badge{
       position:absolute;left:14px;top:14px;border-radius:999px;background:rgba(255,255,255,.92);
       padding:8px 11px;font-size:12px;font-weight:900;box-shadow:0 8px 18px rgba(20,32,27,.12);
     }
-    .venue-body{padding:16px}
+    .venue-body{display:flex;flex:1;flex-direction:column;padding:16px}
     .venue-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
     .venue-card h3{margin:4px 0 6px;font-size:23px;line-height:1.08;letter-spacing:-.025em;text-wrap:balance}
     .muted{color:var(--muted)}
     .meta{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0}
     .row{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:10px 0}
     .row:first-child{border-top:0}
+    .venue-body>.row{margin-top:auto}
     .card-actions{display:flex;gap:10px;margin-top:12px}
     .card-actions .btn{flex:1}
     .empty{
