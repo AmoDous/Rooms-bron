@@ -638,7 +638,7 @@
               </div>
             </div>
             <div class="field">
-              <label for="time">Время</label>
+              <label for="time">Время, если важно</label>
               <select id="time"></select>
             </div>
             <div class="field">
@@ -792,7 +792,7 @@
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
     const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),catalogMap:$("catalogMap"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
-    let state={city:"Воронеж",type:"any",date:today,time:"12:00",hours:3,guests:8,age:"any",features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new";
+    let state={city:"Воронеж",type:"any",date:today,time:"",hours:3,guests:8,age:"any",features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new";
 
     function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
     function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f}catch{return f}}
@@ -1148,7 +1148,8 @@
       if(f.age==="adult"&&r.features.includes("kids"))return false;
       if(f.age==="family"&&r.features.includes("adult"))return false;
       if(f.features.some(x=>!r.features.includes(x)))return false;
-      if(capacity(r,f.date,f.time)<Math.max(r.min,f.hours))return false;
+      const required=Math.max(r.min,f.hours);
+      if(f.time?capacity(r,f.date,f.time)<required:!freeWindows(r,f.date).some(w=>w.max>=required))return false;
       return true;
     }
     function sortRooms(arr){
@@ -1184,7 +1185,7 @@
       E.results.innerHTML=groups.map(venueCard).join("");
       E.empty.style.display=groups.length?"none":"block";
       E.count.textContent=groups.length?`${groups.length} ${groups.length===1?"площадка":"площадки"} · ${arr.length} ${arr.length===1?"помещение":"помещений"}`:"";
-      E.intro.textContent=seed?`Сценарий выбран. Показываем площадки в городе ${f.city}.`:`Показываем площадки в городе ${f.city}.`;
+      E.intro.textContent=seed?`Сценарий выбран. Показываем площадки в городе ${f.city}.`:f.time?`Показываем помещения, свободные ${dateLabel(f.date)} с ${f.time}.`:`Показываем помещения со свободными окнами ${dateLabel(f.date)}.`;
       document.querySelector("#catalog h2").textContent=`Популярные помещения в ${f.city}`;
       renderCatalogView();
     }
@@ -1417,8 +1418,9 @@
 
     function renderSpace(id,keep=false){
       const r=rooms.find(x=>x.id===id),v=venue(r),top=E.modalBox.scrollTop,wins=freeWindows(r,state.date);
-      let chosen=state.time,max=capacity(r,state.date,chosen),note="";
-      if(!max&&wins.length){const n=wins.find(w=>hour(w.time)>=hour(chosen))||wins[0];note=`Выбранное время ${chosen} занято. Ближайшее свободное окно: ${n.time}.`;chosen=n.time;state.time=chosen;max=n.max}
+      let chosen=state.time||"",max=chosen?capacity(r,state.date,chosen):0,note="";
+      if(!chosen&&wins.length){const first=wins.find(w=>w.max>=Math.max(r.min,Number(state.hours)||r.min))||wins[0];chosen=first.time;max=first.max}
+      else if(!max&&wins.length){const n=wins.find(w=>hour(w.time)>=hour(chosen))||wins[0];note=`Выбранное время ${chosen} занято. Ближайшее свободное окно: ${n.time}.`;chosen=n.time;state.time=chosen;max=n.max}
       const wanted=Number(state.hours),hours=max?Math.min(Math.max(r.min,wanted),max):wanted;
       state.hours=hours;
       if(max&&wanted>max)note=`С ${chosen} можно занять помещение только на ${max} ч.`;
@@ -1452,7 +1454,7 @@
       if(keep)requestAnimationFrame(()=>E.modalBox.scrollTop=top);
     }
     function renderBooking(id){
-      const r=rooms.find(x=>x.id===id),v=venue(r),acc=current(),wins=freeWindows(r,state.date),chosen=wins.some(w=>w.time===state.time)?state.time:(wins[0]?.time||""),hourOptions=chosen?bookingHourList(r,state.date,chosen):[],wanted=Number(state.hours)||r.min,h=hourOptions.includes(wanted)?wanted:(hourOptions.find(x=>x>=wanted)||hourOptions[hourOptions.length-1]||r.min),total=hourOptions.length?r.price*h:0,prepay=Math.ceil(total*.3);
+      const r=rooms.find(x=>x.id===id),v=venue(r),acc=current(),wins=freeWindows(r,state.date),wanted=Number(state.hours)||r.min,chosen=wins.some(w=>w.time===state.time)?state.time:(wins.find(w=>w.max>=Math.max(r.min,wanted))?.time||wins[0]?.time||""),hourOptions=chosen?bookingHourList(r,state.date,chosen):[],h=hourOptions.includes(wanted)?wanted:(hourOptions.find(x=>x>=wanted)||hourOptions[hourOptions.length-1]||r.min),total=hourOptions.length?r.price*h:0,prepay=Math.ceil(total*.3);
       openModal(`<span class="kicker">${esc(v.title)} · ${esc(r.title)}</span><h2 style="margin:0">Заявка на бронь</h2><p class="muted">Оставьте имя и телефон. Если кабинета с таким телефоном ещё нет, мы создадим базовый личный кабинет.</p><form id="bookingForm" data-room="${r.id}"><div class="form"><div class="field"><label>Дата</label><input name="date" data-booking-date type="date" min="${today}" value="${state.date}" required></div><div class="field"><label>Время</label><select name="time" data-booking-time ${wins.length?"":"disabled"}>${wins.length?wins.map(w=>`<option value="${w.time}" ${w.time===chosen?"selected":""}>${w.time} · до ${w.max} ${hourWord(w.max)}</option>`).join(""):`<option value="">Нет свободных окон</option>`}</select></div><div class="field"><label>Длительность</label><select name="hours" data-booking-hours ${hourOptions.length?"":"disabled"}>${hourOptions.length?hourOptions.map(x=>`<option value="${x}" ${x===h?"selected":""}>${x} ${hourWord(x)}</option>`).join(""):`<option value="">Нет времени</option>`}</select></div><div class="field"><label>Гостей</label><input name="guests" type="number" min="1" max="${r.capacity}" value="${Math.min(Number(state.guests),r.capacity)}" required></div><div class="field"><label>Имя</label><input name="name" value="${esc(acc?.name||"")}" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" value="${esc(acc?.phone||"")}" placeholder="+7..." required></div><div class="field full"><label>Комментарий</label><textarea name="comment" placeholder="Например: день рождения, нужен проектор, можно ли принести торт"></textarea></div></div><div class="profile-block booking-summary" style="margin-top:14px"><div class="row"><span class="muted">Итого</span><strong data-booking-total>${money(total)}</strong></div><div class="row"><span class="muted">Предоплата</span><strong data-booking-prepay>${money(prepay)}</strong></div><p class="note" data-booking-window-note>${esc(bookingWindowNote(r,state.date,chosen,chosen?capacity(r,state.date,chosen):0,wanted))}</p></div><div class="chips" style="margin-top:14px"><button class="btn primary" data-booking-submit type="submit" ${hourOptions.length?"":"disabled"}>Отправить заявку</button><button class="btn" data-open-room="${r.id}" type="button">Назад к помещению</button></div></form>`,true);
       requestAnimationFrame(()=>updateBookingForm($("bookingForm")));
     }
@@ -1937,7 +1939,7 @@
       if(render)renderCatalog();
     }
     function reset(){
-      E.spaceType.value="any";E.date.value=today;E.time.value="12:00";E.hours.value="3";E.guests.value="8";E.age.value="any";
+      E.spaceType.value="any";E.date.value=today;E.time.value="";E.hours.value="3";E.guests.value="8";E.age.value="any";
       E.chips.querySelectorAll("input").forEach(i=>i.checked=false);E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.remove("active"));
       syncDateDisplay();syncAdult();renderCatalog();
     }
@@ -1948,7 +1950,7 @@
     function hydrate(){
       applyPartnerData();
       applyVenueAdminState();
-      E.time.innerHTML=times.map(t=>`<option ${t===state.time?"selected":""}>${t}</option>`).join("");
+      E.time.innerHTML=`<option value="" ${state.time?"":"selected"}>Любое время</option>`+times.map(t=>`<option value="${t}" ${t===state.time?"selected":""}>${t}</option>`).join("");
       E.date.min=today;E.date.value=state.date||today;syncDateDisplay();E.searchCity.value=state.city;E.spaceType.value=state.type;E.hours.value=String(state.hours);E.guests.value=state.guests;E.age.value=state.age;
       E.accountButton.textContent=current()?(isAdmin()?"Админка":"Профиль"):"Войти";selectCity(state.city,false);syncAdult();renderCatalog();
       updateNoticeBadge();
