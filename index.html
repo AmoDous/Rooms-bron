@@ -172,6 +172,10 @@
       display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;
       background:#fff;padding:8px 11px;font-size:13px;font-weight:800;white-space:nowrap;
     }
+    .tag.priority{border-color:#efc2b6;background:#fff1ed;color:#994b3f}
+    .tag.warn{border-color:#efd2a1;background:#fff8e8;color:#8d5f1c}
+    .tag.ok{border-color:#cbe3cf;background:#eef8f0;color:#4f7f55}
+    .tag.soft{background:var(--paper-2);color:var(--muted)}
     .chip input{width:auto;height:auto;min-height:auto;max-height:none;accent-color:var(--green)}
     .chip.disabled{opacity:.45;pointer-events:none}
     .section{padding:44px 0 52px}
@@ -1154,6 +1158,42 @@
       if(status==="expired")return "время оплаты истекло";
       return `предоплата ${money(b.prepay||0)}`;
     }
+    function dayDiff(value){
+      if(!value)return 999;
+      return Math.round((new Date(`${value}T12:00:00`)-new Date(`${today}T12:00:00`))/86400000);
+    }
+    function bookingQueueRank(b){
+      const status=effectiveBookingStatus(b),diff=dayDiff(b.date);
+      if(status==="expired")return 0;
+      if(status==="pending"&&diff<=1)return 1;
+      if(status==="proposed"&&diff<=1)return 2;
+      if(status==="awaiting_payment")return 3;
+      if(status==="pending"||status==="proposed")return 4;
+      if(status==="paid"&&diff<=1)return 5;
+      if(diff>=0&&diff<=6)return 6;
+      return 9;
+    }
+    function bookingSortValue(b){
+      const r=rooms.find(x=>x.id===b.roomId),t=r?slotHour(r,b.time,b.date):hour(b.time);
+      return `${String(bookingQueueRank(b)).padStart(2,"0")}|${b.date||"9999-12-31"}|${String(t).padStart(2,"0")}|${b.created||""}`;
+    }
+    function sortBookingQueue(list){return [...list].sort((a,b)=>bookingSortValue(a).localeCompare(bookingSortValue(b)))}
+    function paymentMinutesLeft(b){
+      const due=paymentDueMs(b);return due?Math.max(0,Math.ceil((due-Date.now())/60000)):0;
+    }
+    function bookingPriorityTags(b){
+      const status=effectiveBookingStatus(b),diff=dayDiff(b.date),tags=[];
+      if(status==="expired")tags.push(["priority","оплата просрочена"]);
+      else if(status==="pending")tags.push(["priority","нужно подтвердить"]);
+      else if(status==="proposed")tags.push(["warn","ждём ответа клиента"]);
+      else if(status==="awaiting_payment"){const left=paymentMinutesLeft(b);tags.push(["warn",left?`оплата ${left} мин`:"ожидает оплату"])}
+      else if(status==="paid")tags.push(["ok","бронь оплачена"]);
+      if(diff<0)tags.push(["soft","дата прошла"]);
+      else if(diff===0)tags.push(["priority","сегодня"]);
+      else if(diff===1)tags.push(["warn","завтра"]);
+      else if(diff<=6)tags.push(["soft",`через ${diff} дн.`]);
+      return tags.map(([cls,text])=>`<span class="tag ${cls}">${esc(text)}</span>`).join("");
+    }
     function bookingContactLine(b,area){
       const number=phone(b.phone);
       if(area==="partner"&&!isPrepayPaid(b))return `${esc(b.name)} · телефон откроется после предоплаты`;
@@ -1660,8 +1700,8 @@
     }
     function bookingCard(b,area="admin"){
       const status=effectiveBookingStatus(b),room=rooms.find(r=>r.id===b.roomId),windows=room?freeWindows(room,b.date).length:0;
-      const p=b.proposal,serviceTags=(b.services||[]).map(x=>`<span class="tag">${esc(x.name)} · +${money(x.price)}</span>`).join(""),eventTags=[eventLabel(b.eventType),b.eventName].filter(Boolean).map(x=>`<span class="tag">${esc(x)}</span>`).join("");
-      return `<article class="admin-item" data-booking-card="${esc(b.id)}"><div class="admin-item-head"><div><h4>${esc(b.venue)} · ${esc(b.room)}</h4><p class="muted" style="margin:0">${bookingContactLine(b,area)} · ${esc(b.date)} в ${esc(b.time)} · ${b.hours} ч · ${b.guests} гостей</p></div><span class="status ${esc(status)}">${statusLabel(status)}</span></div>${bookingFlow(status)}<div class="admin-meta"><span class="tag">${money(b.total||0)}</span><span class="tag">${prepayText(b)}</span>${eventTags}${serviceTags}<span class="tag">${windows} окон в комнате</span>${p?`<span class="tag">предложено ${esc(p.date)} в ${esc(p.time)} на ${p.hours} ч</span>`:""}</div>${b.comment?`<p class="muted" style="margin:10px 0 0">Комментарий: ${esc(b.comment)}</p>`:""}${cancelMeta(b)}<div class="admin-actions">${bookingActions(b,area)}</div></article>`;
+      const p=b.proposal,priorityTags=bookingPriorityTags(b),serviceTags=(b.services||[]).map(x=>`<span class="tag">${esc(x.name)} · +${money(x.price)}</span>`).join(""),eventTags=[eventLabel(b.eventType),b.eventName].filter(Boolean).map(x=>`<span class="tag">${esc(x)}</span>`).join("");
+      return `<article class="admin-item" data-booking-card="${esc(b.id)}"><div class="admin-item-head"><div><h4>${esc(b.venue)} · ${esc(b.room)}</h4><p class="muted" style="margin:0">${bookingContactLine(b,area)} · ${esc(b.date)} в ${esc(b.time)} · ${b.hours} ч · ${b.guests} гостей</p></div><span class="status ${esc(status)}">${statusLabel(status)}</span></div>${bookingFlow(status)}<div class="admin-meta">${priorityTags}<span class="tag">${money(b.total||0)}</span><span class="tag">${prepayText(b)}</span>${eventTags}${serviceTags}<span class="tag">${windows} окон в комнате</span>${p?`<span class="tag">предложено ${esc(p.date)} в ${esc(p.time)} на ${p.hours} ч</span>`:""}</div>${b.comment?`<p class="muted" style="margin:10px 0 0">Комментарий: ${esc(b.comment)}</p>`:""}${cancelMeta(b)}<div class="admin-actions">${bookingActions(b,area)}</div></article>`;
     }
     function renderFavorites(){
       const saved=[...favorites()].map(id=>rooms.find(r=>r.id===id)).filter(Boolean);
@@ -1690,7 +1730,7 @@
       const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=[...seedReviews,...customReviews()],adminCounts={new:0,payment:0,booked:0,history:0};
       books.forEach(b=>adminCounts[partnerBookingGroup(b)]++);
       const pending=adminCounts.new,confirmed=adminCounts.payment+adminCounts.booked,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
-      const adminBaseBooks=adminBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===adminBookingFilter),filteredBooks=filterBookingQueue(books,adminBookingFilter,adminBookingDateFilter,adminBookingEventFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"admin")).join("");
+      const adminBaseBooks=adminBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===adminBookingFilter),filteredBooks=sortBookingQueue(filterBookingQueue(books,adminBookingFilter,adminBookingDateFilter,adminBookingEventFilter)),bookingRows=filteredBooks.map(b=>bookingCard(b,"admin")).join("");
       const adminFilters=[["new","Новые",adminCounts.new],["payment","Ждут оплату",adminCounts.payment],["booked","Оплачены",adminCounts.booked],["history","История",adminCounts.history],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${adminBookingFilter===id?"active":""}" data-admin-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
       const adminQueue=bookingQueueControls(adminBaseBooks,"admin",adminBookingDateFilter,adminBookingEventFilter);
       const adminEmpty=adminBaseBooks.length?"По выбранной дате и формату события заявок нет. Сбросьте фильтры очереди или выберите другую вкладку.":books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[adminBookingFilter]||"Все"}» заявок пока нет.`:"Заявок пока нет.";
@@ -1732,7 +1772,7 @@
       const busy=live?blockHours(bufferedBlocks(live,partnerBusyBlocks(live,date))):partnerBusyHours(selected,date,data),dayWork=live?effectiveWork(live,date):null;
       const slots=dayWork?Array.from({length:dayWork[1]-dayWork[0]},(_,i)=>dayWork[0]+i):[],booked=live?blockHours(bufferedBlocks(live,bookingBusyBlocks(live,date))):[],busyTotal=partnerBusyHoursTotal(data),bookedTotal=booked.length,books=partnerBookings(ids),venuePublished=(data.venue.publicationStatus||"published")==="published",publishedIds=venuePublished?ids.filter(id=>(data.rooms[id].status||"published")==="published"):[],rating=(ids.reduce((s,id)=>s+(rooms.find(r=>r.id===id)?.rating||0),0)/Math.max(1,ids.length)).toFixed(1);
       const partnerCounts={new:0,payment:0,booked:0,history:0};books.forEach(b=>partnerCounts[partnerBookingGroup(b)]++);
-      const partnerBaseBooks=partnerBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===partnerBookingFilter),filteredBooks=filterBookingQueue(books,partnerBookingFilter,partnerBookingDateFilter,partnerBookingEventFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"partner")).join("");
+      const partnerBaseBooks=partnerBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===partnerBookingFilter),filteredBooks=sortBookingQueue(filterBookingQueue(books,partnerBookingFilter,partnerBookingDateFilter,partnerBookingEventFilter)),bookingRows=filteredBooks.map(b=>bookingCard(b,"partner")).join("");
       const partnerFilters=[["new","Новые",partnerCounts.new],["payment","Ждут оплату",partnerCounts.payment],["booked","Оплачены",partnerCounts.booked],["history","История",partnerCounts.history],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${partnerBookingFilter===id?"active":""}" data-partner-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
       const partnerQueue=bookingQueueControls(partnerBaseBooks,"partner",partnerBookingDateFilter,partnerBookingEventFilter);
       const partnerEmpty=partnerBaseBooks.length?"По выбранной дате и формату события заявок нет. Сбросьте фильтры очереди или выберите другую вкладку.":books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[partnerBookingFilter]||"Все"}» заявок пока нет.`:"Заявок по этим помещениям пока нет.";
