@@ -471,6 +471,14 @@
     }
     .booking-filter:hover{border-color:#e1b5a7;color:var(--green)}
     .booking-filter.active{border-color:#e1b5a7;background:var(--mint);color:var(--green)}
+    .queue-tools{
+      display:grid;gap:10px;margin:0 0 12px;padding:10px;border:1px solid var(--line);border-radius:14px;
+      background:rgba(255,255,255,.72);
+    }
+    .queue-tools .booking-filters{margin:0}
+    .queue-event{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-weight:850}
+    .queue-event select{width:auto;min-width:210px;min-height:38px;border-radius:10px;background:#fff;font-size:13px}
+    .queue-summary{color:var(--muted);font-size:12px;font-weight:800}
     .flow-step{
       display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;
       background:#fff;padding:6px 9px;color:var(--muted);font-size:12px;font-weight:850;
@@ -602,6 +610,7 @@
       .detail-title h2{font-size:34px}
       .card-actions{grid-template-columns:1fr 1fr;gap:8px}
       .card-actions .btn{min-height:42px}
+      .queue-event select{width:100%;min-width:0}
     }
   </style>
 </head>
@@ -824,7 +833,7 @@
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
     const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),catalogMap:$("catalogMap"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
-    let state={city:"Воронеж",type:"any",date:today,time:"",hours:3,guests:8,age:"any",features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new";
+    let state={city:"Воронеж",type:"any",date:today,time:"",hours:3,guests:8,age:"any",features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new",partnerBookingDateFilter="all",partnerBookingEventFilter="all",adminBookingDateFilter="all",adminBookingEventFilter="all";
 
     function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
     function read(k,f){try{return JSON.parse(localStorage.getItem(k))??f}catch{return f}}
@@ -960,6 +969,38 @@
     function eventLabel(value){return eventOptions.find(([id])=>id===value)?.[1]||""}
     function defaultEventForRoom(r){return ({kids:"kids",karaoke:"karaoke",banquet:"banquet",lounge:"meeting"})[r?.type]||"birthday"}
     function eventSelect(value=""){return eventOptions.map(([id,label])=>`<option value="${id}" ${id===value?"selected":""}>${label}</option>`).join("")}
+    function bookingDateMatches(b,filter){
+      if(filter==="all")return true;
+      if(!b?.date)return filter==="unknown";
+      if(filter==="today")return b.date===today;
+      if(filter==="tomorrow")return b.date===shiftDate(today,1);
+      if(filter==="week")return b.date>=today&&b.date<=shiftDate(today,6);
+      if(filter==="later")return b.date>shiftDate(today,6);
+      if(filter==="past")return b.date<today;
+      return true;
+    }
+    function bookingEventValue(b){return b?.eventType||"unknown"}
+    function bookingEventText(value){return value==="unknown"?"Без формата":eventLabel(value)||"Другое событие"}
+    function filterBookingQueue(list,statusFilter,dateFilter,eventFilter){
+      const byStatus=statusFilter==="all"?list:list.filter(b=>partnerBookingGroup(b)===statusFilter);
+      return byStatus.filter(b=>bookingDateMatches(b,dateFilter)&&((eventFilter==="all")||bookingEventValue(b)===eventFilter));
+    }
+    function bookingQueueControls(list,area,dateFilter,eventFilter){
+      const dateOptions=[["all","Все даты"],["today","Сегодня"],["tomorrow","Завтра"],["week","7 дней"],["later","Позже"]];
+      if(list.some(b=>bookingDateMatches(b,"past")))dateOptions.push(["past","Прошедшие"]);
+      const dateButtons=dateOptions.map(([id,label])=>{
+        const count=id==="all"?list.length:list.filter(b=>bookingDateMatches(b,id)).length;
+        return `<button class="booking-filter ${dateFilter===id?"active":""}" data-${area}-booking-date="${id}" type="button">${label} · ${count}</button>`;
+      }).join("");
+      const used=[...new Set(list.map(bookingEventValue))],eventItems=[["all","Все события"],...eventOptions.filter(([id])=>used.includes(id)),...(used.includes("unknown")?[["unknown","Без формата"]]:[])];
+      if(eventFilter!=="all"&&!eventItems.some(([id])=>id===eventFilter))eventItems.push([eventFilter,bookingEventText(eventFilter)]);
+      const eventOptionsHtml=eventItems.map(([id,label])=>{
+        const count=id==="all"?list.length:list.filter(b=>bookingEventValue(b)===id).length;
+        return `<option value="${id}" ${eventFilter===id?"selected":""}>${label} · ${count}</option>`;
+      }).join("");
+      const shown=list.filter(b=>bookingDateMatches(b,dateFilter)&&((eventFilter==="all")||bookingEventValue(b)===eventFilter)).length;
+      return `<div class="queue-tools"><div class="booking-filters">${dateButtons}</div><label class="queue-event"><span>Формат события</span><select data-${area}-booking-event>${eventOptionsHtml}</select></label><div class="queue-summary">Показано ${shown} из ${list.length} заявок в выбранной вкладке</div></div>`;
+    }
     function roomImageForType(type){
       return type==="kids"?img("kids-loft"):type==="karaoke"?img("karaoke-room"):type==="banquet"?img("banquet-hall"):img("lounge-room");
     }
@@ -1649,9 +1690,10 @@
       const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=[...seedReviews,...customReviews()],adminCounts={new:0,payment:0,booked:0,history:0};
       books.forEach(b=>adminCounts[partnerBookingGroup(b)]++);
       const pending=adminCounts.new,confirmed=adminCounts.payment+adminCounts.booked,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
-      const filteredBooks=adminBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===adminBookingFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"admin")).join("");
+      const adminBaseBooks=adminBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===adminBookingFilter),filteredBooks=filterBookingQueue(books,adminBookingFilter,adminBookingDateFilter,adminBookingEventFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"admin")).join("");
       const adminFilters=[["new","Новые",adminCounts.new],["payment","Ждут оплату",adminCounts.payment],["booked","Оплачены",adminCounts.booked],["history","История",adminCounts.history],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${adminBookingFilter===id?"active":""}" data-admin-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
-      const adminEmpty=books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[adminBookingFilter]||"Все"}» заявок пока нет.`:"Заявок пока нет.";
+      const adminQueue=bookingQueueControls(adminBaseBooks,"admin",adminBookingDateFilter,adminBookingEventFilter);
+      const adminEmpty=adminBaseBooks.length?"По выбранной дате и формату события заявок нет. Сбросьте фильтры очереди или выберите другую вкладку.":books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[adminBookingFilter]||"Все"}» заявок пока нет.`:"Заявок пока нет.";
       const leadRows=leads.map(l=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(l.venue)}</h4><p class="muted" style="margin:0">${esc(l.city)} · ${esc(l.address||"адрес уточняется")} · ${esc(l.name||"контакт")} · ${esc(l.phone||"")} ${l.email?`· ${esc(l.email)}`:""}</p></div><span class="status review">${leadStatusLabel(l.status)}</span></div><div class="admin-meta"><span class="tag">${esc(l.type||"тип не указан")}</span><span class="tag">${Number(l.rooms)||1} помещений</span></div><p class="muted" style="margin:9px 0 0">${esc(l.comment||"Комментарий не заполнен")}</p><div class="admin-actions"><button class="btn primary" data-admin-lead="${l.id}|review" type="button">В модерацию</button><button class="btn" data-admin-lead="${l.id}|approved" type="button">Одобрить</button><button class="btn" data-admin-lead="${l.id}|rejected" type="button">Отклонить</button></div></article>`).join("");
       const roomRows=venues.filter(v=>v.city===state.city||v.city==="Воронеж").map(v=>{
         const pub=v.publicationStatus||"published",cabinet=v.cabinetStatus||"active";
@@ -1662,7 +1704,7 @@
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">К оплате / оплачены</span><strong>${confirmed}</strong></div><div class="dash-card"><span class="muted">Посещения</span><strong>${visitCount}</strong></div><div class="dash-card"><span class="muted">Партнёры</span><strong>${leads.length}</strong></div></div>
         <div class="chips"><button class="btn soft" data-export="admin" type="button">Экспорт заявок CSV</button></div>
         <div class="admin-grid">
-          <section class="admin-panel"><h3>Заявки на бронь</h3><div class="booking-filters">${adminFilters}</div><div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${adminEmpty}</div>`}</div></section>
+          <section class="admin-panel"><h3>Заявки на бронь</h3><div class="booking-filters">${adminFilters}</div>${adminQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${adminEmpty}</div>`}</div></section>
           <aside class="admin-panel"><h3>Площадки на подключение</h3><div class="admin-list">${leadRows}</div></aside>
         </div>
         <div class="admin-grid">
@@ -1690,16 +1732,17 @@
       const busy=live?blockHours(bufferedBlocks(live,partnerBusyBlocks(live,date))):partnerBusyHours(selected,date,data),dayWork=live?effectiveWork(live,date):null;
       const slots=dayWork?Array.from({length:dayWork[1]-dayWork[0]},(_,i)=>dayWork[0]+i):[],booked=live?blockHours(bufferedBlocks(live,bookingBusyBlocks(live,date))):[],busyTotal=partnerBusyHoursTotal(data),bookedTotal=booked.length,books=partnerBookings(ids),venuePublished=(data.venue.publicationStatus||"published")==="published",publishedIds=venuePublished?ids.filter(id=>(data.rooms[id].status||"published")==="published"):[],rating=(ids.reduce((s,id)=>s+(rooms.find(r=>r.id===id)?.rating||0),0)/Math.max(1,ids.length)).toFixed(1);
       const partnerCounts={new:0,payment:0,booked:0,history:0};books.forEach(b=>partnerCounts[partnerBookingGroup(b)]++);
-      const filteredBooks=partnerBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===partnerBookingFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"partner")).join("");
+      const partnerBaseBooks=partnerBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===partnerBookingFilter),filteredBooks=filterBookingQueue(books,partnerBookingFilter,partnerBookingDateFilter,partnerBookingEventFilter),bookingRows=filteredBooks.map(b=>bookingCard(b,"partner")).join("");
       const partnerFilters=[["new","Новые",partnerCounts.new],["payment","Ждут оплату",partnerCounts.payment],["booked","Оплачены",partnerCounts.booked],["history","История",partnerCounts.history],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${partnerBookingFilter===id?"active":""}" data-partner-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
-      const partnerEmpty=books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[partnerBookingFilter]||"Все"}» заявок пока нет.`:"Заявок по этим помещениям пока нет.";
+      const partnerQueue=bookingQueueControls(partnerBaseBooks,"partner",partnerBookingDateFilter,partnerBookingEventFilter);
+      const partnerEmpty=partnerBaseBooks.length?"По выбранной дате и формату события заявок нет. Сбросьте фильтры очереди или выберите другую вкладку.":books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[partnerBookingFilter]||"Все"}» заявок пока нет.`:"Заявок по этим помещениям пока нет.";
       const weekStart=state.partnerWeekStart||date,weekDates=Array.from({length:7},(_,i)=>shiftDate(weekStart,i));
       const weekCards=live?weekDates.map(d=>{const x=partnerDaySummary(live,d),bookedWidth=x.total?x.booked/x.total*100:0,manualWidth=x.total?x.manual/x.total*100:0,exception=data.venue.specialHours?.[d],exceptionLabel=exception?.mode==="closed"?"особый выходной · ":exception?.mode==="custom"?`${intervalText(exception.start,exception.end)} · `:"";return `<button class="week-day ${d===date?"active":""}" data-partner-day="${d}" type="button"><span>${weekdayLabel(d)}</span><strong>${shortDateLabel(d)}</strong><div class="week-bar"><i class="booked" style="width:${bookedWidth}%"></i><i class="manual" style="width:${manualWidth}%"></i></div><small>${exceptionLabel}${x.free} свободно · ${x.booked} заявки · ${x.manual} вручную</small></button>`}).join(""):"";
       openModal(`<div class="partner-cabinet">
         <div class="partner-title"><span class="kicker">Кабинет партнёра</span><h2>${esc(data.venue.title)}</h2><p class="muted">Здесь площадка редактирует информацию о заведении, помещениях внутри него и отмечает занятость. Занятые часы сразу пропадают из свободных окон для клиента.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="dash-card"><span class="muted">В каталоге</span><strong>${publishedIds.length}</strong></div><div class="dash-card"><span class="muted">Занято вручную</span><strong>${busyTotal}</strong></div><div class="dash-card"><span class="muted">Занято заявками</span><strong>${bookedTotal}</strong></div></div>
         <div class="chips"><button class="btn soft" data-partner-notifications type="button">Уведомления${Number(partnerNotice().unread||0)?` · ${Number(partnerNotice().unread)}`:""}</button><button class="btn soft" data-export="partner" type="button">Экспорт моих заявок CSV</button><span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений</span></div>
-        <div class="partner-editor" data-partner-bookings><div class="admin-item-head"><div><h3>Заявки по вашим помещениям</h3><p class="muted" style="margin:0">Подтверждение здесь сразу обновляет админку Rooms и календарь доступности.</p></div><span class="status">${partnerCounts.new} новых</span></div><div class="booking-filters">${partnerFilters}</div><div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${partnerEmpty}</div>`}</div></div>
+        <div class="partner-editor" data-partner-bookings><div class="admin-item-head"><div><h3>Заявки по вашим помещениям</h3><p class="muted" style="margin:0">Подтверждение здесь сразу обновляет админку Rooms и календарь доступности.</p></div><span class="status">${partnerCounts.new} новых</span></div><div class="booking-filters">${partnerFilters}</div>${partnerQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${partnerEmpty}</div>`}</div></div>
         <div class="partner-shell">
           <form class="partner-editor" id="partnerVenueEdit">
             <h3>Заведение</h3>
@@ -2109,7 +2152,7 @@
     E.modal.addEventListener("click",e=>{if(e.target===E.modal)closeModal()});
     E.partnerForm.addEventListener("submit",e=>{e.preventDefault();const lead={id:`P-${Date.now().toString().slice(-6)}`,city:$("partnerCity").value,venue:$("partnerVenue").value,address:$("partnerAddress").value,name:$("partnerName").value,phone:$("partnerPhone").value,email:$("partnerEmail").value,type:$("partnerType").value,rooms:Number($("partnerRooms").value)||1,comment:$("partnerComment").value,status:"new",created:new Date().toISOString()};write(store.partner,[lead,...read(store.partner,[])]);logActivity("partner_lead","Новая заявка партнёра",`${lead.venue} · ${lead.city} · ${lead.rooms} помещений`);E.partnerStatus.textContent="Заявка отправлена";toast("Спасибо. Мы свяжемся с площадкой.");E.partnerForm.reset();$("partnerCity").value=state.city});
     document.addEventListener("submit",e=>{if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}});
-    document.addEventListener("change",e=>{if(e.target.matches("[data-special-mode]")){const fields=e.target.form?.querySelector("[data-special-fields]");if(fields)fields.hidden=e.target.value!=="custom";return}if(e.target.matches('[name^="work_"][name$="_enabled"]')){e.target.closest(".schedule-day")?.classList.toggle("off",!e.target.checked);return}if(e.target.matches("[data-proposal-date],[data-proposal-time],[data-proposal-hours]")){updateProposalForm(e.target.form);return}if(e.target.matches("[data-booking-date],[data-booking-time],[data-booking-hours],[data-booking-service]")){updateBookingForm(e.target.form);return}if(e.target.matches("[data-detail-date]")){state.date=e.target.value;E.date.value=state.date;renderSpace(e.target.dataset.detailDate,true)}if(e.target.matches("[data-detail-hours]")){state.hours=Number(e.target.value);E.hours.value=String(state.hours);renderSpace(e.target.dataset.detailHours,true)}if(e.target.matches("[data-partner-busy-room]")){state.partnerRoom=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-partner-busy-date]")){state.partnerDate=e.target.value;state.partnerWeekStart=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-photo-upload]"))handlePhotoUpload(e.target)});
+    document.addEventListener("change",e=>{if(e.target.matches("[data-special-mode]")){const fields=e.target.form?.querySelector("[data-special-fields]");if(fields)fields.hidden=e.target.value!=="custom";return}if(e.target.matches('[name^="work_"][name$="_enabled"]')){e.target.closest(".schedule-day")?.classList.toggle("off",!e.target.checked);return}if(e.target.matches("[data-proposal-date],[data-proposal-time],[data-proposal-hours]")){updateProposalForm(e.target.form);return}if(e.target.matches("[data-booking-date],[data-booking-time],[data-booking-hours],[data-booking-service]")){updateBookingForm(e.target.form);return}if(e.target.matches("[data-detail-date]")){state.date=e.target.value;E.date.value=state.date;renderSpace(e.target.dataset.detailDate,true)}if(e.target.matches("[data-detail-hours]")){state.hours=Number(e.target.value);E.hours.value=String(state.hours);renderSpace(e.target.dataset.detailHours,true)}if(e.target.matches("[data-admin-booking-event]")){adminBookingEventFilter=e.target.value;renderAdminDashboard(true);return}if(e.target.matches("[data-partner-booking-event]")){partnerBookingEventFilter=e.target.value;renderPartnerCabinet(true);return}if(e.target.matches("[data-partner-busy-room]")){state.partnerRoom=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-partner-busy-date]")){state.partnerDate=e.target.value;state.partnerWeekStart=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-photo-upload]"))handlePhotoUpload(e.target)});
     document.addEventListener("click",e=>{
       const city=e.target.closest("[data-city-choice]");if(city){selectCity(city.dataset.cityChoice);closeModal();toast(`Город поиска: ${city.dataset.cityChoice}`);return}
       const scenario=e.target.closest("[data-scenario]");if(scenario){E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.toggle("active",b===scenario));E.spaceType.value=scenario.dataset.scenario;renderCatalog(scenario.dataset.scenario);document.getElementById("catalog").scrollIntoView({behavior:"smooth"});return}
@@ -2121,6 +2164,7 @@
       const serviceRemove=e.target.closest("[data-service-remove]");if(serviceRemove){serviceRemove.closest(".service-row")?.remove();return}
       const partnerRoom=e.target.closest("[data-partner-room]");if(partnerRoom){state.partnerRoom=partnerRoom.dataset.partnerRoom;renderPartnerCabinet(true);return}
       const partnerFilter=e.target.closest("[data-partner-booking-filter]");if(partnerFilter){partnerBookingFilter=partnerFilter.dataset.partnerBookingFilter;renderPartnerCabinet(true);return}
+      const partnerDateFilter=e.target.closest("[data-partner-booking-date]");if(partnerDateFilter){partnerBookingDateFilter=partnerDateFilter.dataset.partnerBookingDate;renderPartnerCabinet(true);return}
       const partnerDay=e.target.closest("[data-partner-day]");if(partnerDay){state.partnerDate=partnerDay.dataset.partnerDay;renderPartnerCabinet(true);return}
       const partnerWeek=e.target.closest("[data-partner-week]");if(partnerWeek){const start=state.partnerWeekStart||state.partnerDate||today,next=shiftDate(start,Number(partnerWeek.dataset.partnerWeek));state.partnerWeekStart=next<today?today:next;state.partnerDate=state.partnerWeekStart;renderPartnerCabinet(true);return}
       const busy=e.target.closest("[data-busy-toggle]");if(busy){togglePartnerBusy(busy.dataset.busyToggle);return}
@@ -2136,6 +2180,7 @@
       const payBookingButton=e.target.closest("[data-pay-booking]");if(payBookingButton){payBooking(payBookingButton.dataset.payBooking);return}
       const adminBooking=e.target.closest("[data-admin-booking]");if(adminBooking){updateBookingStatus(adminBooking.dataset.adminBooking);return}
       const adminFilter=e.target.closest("[data-admin-booking-filter]");if(adminFilter){adminBookingFilter=adminFilter.dataset.adminBookingFilter;renderAdminDashboard(true);return}
+      const adminDateFilter=e.target.closest("[data-admin-booking-date]");if(adminDateFilter){adminBookingDateFilter=adminDateFilter.dataset.adminBookingDate;renderAdminDashboard(true);return}
       const adminLead=e.target.closest("[data-admin-lead]");if(adminLead){updateLeadStatus(adminLead.dataset.adminLead);return}
       const adminVenue=e.target.closest("[data-admin-venue]");if(adminVenue){updateVenueAdmin(adminVenue.dataset.adminVenue);return}
       const win=e.target.closest("[data-window]");if(win){const [id,t]=win.dataset.window.split("|");state.time=t;E.time.value=t;renderSpace(id,true);return}
