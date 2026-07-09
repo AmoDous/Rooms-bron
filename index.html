@@ -462,7 +462,7 @@
       background:var(--mint);color:var(--green);font-size:12px;font-weight:900;white-space:nowrap;
     }
     .status.confirmed,.status.awaiting_payment,.status.proposed{background:#fff7e8;color:#9b6048}
-    .status.paid,.status.visited{background:#edf6ee;color:#4f7f55}
+    .status.paid,.status.visited,.status.refunded{background:#edf6ee;color:#4f7f55}
     .status.cancelled,.status.expired{background:#f4eded;color:#8a5048}
     .status.review{background:#fff4de;color:#9b6a22}
     .admin-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
@@ -1117,10 +1117,10 @@
     function exportBookings(scope="admin"){
       const ids=scope==="partner"?partnerRoomIds():null;
       const rows=(scope==="partner"?partnerBookings(ids):adminBookings()).map(b=>{
-        const status=effectiveBookingStatus(b),publicPhone=scope==="admin"||isPrepayPaid(b)?b.phone:"скрыт до предоплаты";
+        const status=effectiveBookingStatus(b),publicPhone=scope==="admin"||hasPaymentRecord(b)?b.phone:"скрыт до предоплаты";
         const last=bookingHistory(b)[0],lastAction=last?`${historyActorLabel(last.actor)}: ${last.title}${last.details?` · ${last.details}`:""}`:"";
         const base=[b.name,publicPhone,b.date,b.time,b.hours,b.room,eventLabel(b.eventType)||"",b.eventName||"",bookingServicesText(b.services||[]),b.total||0,statusLabel(status),lastAction,b.comment||"",b.internalNote||""];
-        return scope==="admin"?[b.venue,b.city,...base,b.prepay||0,b.paymentStatus||""]:base;
+        return scope==="admin"?[b.venue,b.city,...base,b.prepay||0,paymentStatusLabel(b.paymentStatus)||b.paymentStatus||""]:base;
       });
       const head=scope==="admin"?["Площадка","Город","Клиент","Телефон","Дата","Время","Часы","Помещение","Событие","Название события","Услуги","Сумма","Статус","Последнее действие","Комментарий","Внутренняя заметка","Предоплата","Статус оплаты"]:["Клиент","Телефон","Дата","Время","Часы","Помещение","Событие","Название события","Услуги","Сумма","Статус","Последнее действие","Комментарий","Внутренняя заметка"];
       downloadCsv(`rooms-${scope}-bookings-${today}.csv`,[head,...rows]);
@@ -1131,9 +1131,11 @@
       const text=encodeURIComponent(`${v.city}, ${v.address}, ${v.title}`);
       return `https://yandex.ru/map-widget/v1/?text=${text}&z=15`;
     }
-    function statusLabel(s){return ({pending:"новая",proposed:"предложено время",confirmed:"подтверждена",awaiting_payment:"ожидает предоплату",paid:"оплачена",expired:"оплата истекла",visited:"посещение состоялось",completed:"посещение состоялось",cancelled:"отменена"})[s]||"новая"}
+    function statusLabel(s){return ({pending:"новая",proposed:"предложено время",confirmed:"подтверждена",awaiting_payment:"ожидает предоплату",paid:"оплачена",expired:"оплата истекла",visited:"посещение состоялось",completed:"посещение состоялось",cancelled:"отменена",refunded:"возврат выполнен"})[s]||"новая"}
     function leadStatusLabel(s){return ({new:"новая заявка",review:"на модерации",approved:"одобрена",rejected:"отклонена"})[s]||"новая заявка"}
+    function paymentStatusLabel(s){return ({pending:"ожидает оплаты",paid:"предоплата внесена",refund_pending:"нужен возврат",refunded:"возврат выполнен"})[s]||""}
     function isPrepayPaid(b){return b.status==="paid"||b.paymentStatus==="paid"||b.prepayPaid===true}
+    function hasPaymentRecord(b){return isPrepayPaid(b)||["refund_pending","refunded"].includes(b.paymentStatus)||!!b.paidAt}
     function paymentDueMs(b){return b.paymentDueAt?new Date(b.paymentDueAt).getTime():0}
     function isPaymentHoldActive(b){
       const status=b.status||"pending";
@@ -1174,6 +1176,17 @@
       if(status==="expired")return "время оплаты истекло";
       return `предоплата ${money(b.prepay||0)}`;
     }
+    function paymentMetaTags(b){
+      const status=effectiveBookingStatus(b),tags=[];
+      if(b.paymentStatus==="refund_pending")tags.push(["warn",`нужен возврат ${money(b.prepay||0)}`]);
+      else if(b.paymentStatus==="refunded")tags.push(["ok",`возврат выполнен ${money(b.prepay||0)}`]);
+      else if(isPrepayPaid(b))tags.push(["ok",b.paidAt?`оплачено ${new Date(b.paidAt).toLocaleDateString("ru-RU")}`:"оплачено"]);
+      else if(status==="awaiting_payment"){
+        const due=paymentDueMs(b);
+        tags.push(["warn",due?`оплатить до ${new Date(due).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}`:"ожидает оплату"]);
+      }
+      return tags.map(([cls,text])=>`<span class="tag ${cls}">${esc(text)}</span>`).join("");
+    }
     function dayDiff(value){
       if(!value)return 999;
       return Math.round((new Date(`${value}T12:00:00`)-new Date(`${today}T12:00:00`))/86400000);
@@ -1212,7 +1225,7 @@
     }
     function bookingContactLine(b,area){
       const number=phone(b.phone);
-      if(area==="partner"&&!isPrepayPaid(b))return `${esc(b.name)} · телефон откроется после предоплаты`;
+      if(area==="partner"&&!hasPaymentRecord(b))return `${esc(b.name)} · телефон откроется после предоплаты`;
       return `${esc(b.name)} · ${number?`+${esc(number)}`:esc(b.phone)}`;
     }
     function cancelActorLabel(actor){return ({client:"клиент",partner:"площадка",admin:"Rooms"})[actor]||"Rooms"}
@@ -1488,7 +1501,7 @@
       return b?[{id:`legacy-${b.id}`,bookingId:b.id,status:notice.lastStatus||b.status,room:b.room,venue:b.venue,date:b.date,time:b.time,created:notice.updated||b.created||new Date().toISOString(),read:!notice.unread}]:[];
     }
     function userNoticeTitle(status){
-      return ({proposed:"Площадка предложила другое время",awaiting_payment:"Время подтверждено",confirmed:"Время подтверждено",paid:"Предоплата получена",visited:"Посещение завершено",completed:"Посещение завершено",cancelled:"Бронь отменена",expired:"Время оплаты истекло"})[status]||"Статус брони изменён";
+      return ({proposed:"Площадка предложила другое время",awaiting_payment:"Время подтверждено",confirmed:"Время подтверждено",paid:"Предоплата получена",visited:"Посещение завершено",completed:"Посещение завершено",cancelled:"Бронь отменена",expired:"Время оплаты истекло",refunded:"Возврат предоплаты выполнен"})[status]||"Статус брони изменён";
     }
     function markCurrentUserNoticesRead(){
       const notice=currentUserNotice(),items=currentUserNoticeItems();
@@ -1736,12 +1749,19 @@
       if(status==="proposed")return `<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Изменить предложение</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
       if(status==="awaiting_payment")return `<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button>`;
       if(status==="paid")return `<button class="btn primary" data-booking-status="${b.id}|visited" ${after} type="button">Посещение состоялось</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
+      if(status==="cancelled"&&b.paymentStatus==="refund_pending"){
+        const refundButton=area==="admin"?`<button class="btn primary" data-refund-booking="${b.id}" data-refund-after="${area}" type="button">Отметить возврат ${money(b.prepay||0)}</button>`:"";
+        return `${refundButton}<p class="muted" style="flex-basis:100%;margin:2px 0 0">Бронь отменена после предоплаты. Возврат ожидает обработки.</p>`;
+      }
+      if(status==="cancelled"&&b.paymentStatus==="refunded")return `<p class="muted" style="margin:10px 0 0">Возврат предоплаты отмечен выполненным.</p>`;
+      if(status==="visited"||status==="completed")return `<p class="muted" style="margin:10px 0 0">Посещение завершено. Клиент может оставить отзыв после визита.</p>`;
+      if(status==="expired")return `<button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Срок предоплаты истёк, слот снова доступен в каталоге.</p>`;
       return `<button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button>`;
     }
     function bookingCard(b,area="admin"){
       const status=effectiveBookingStatus(b),room=rooms.find(r=>r.id===b.roomId),windows=room?freeWindows(room,b.date).length:0;
       const p=b.proposal,priorityTags=bookingPriorityTags(b),serviceTags=(b.services||[]).map(x=>`<span class="tag">${esc(x.name)} · +${money(x.price)}</span>`).join(""),eventTags=[eventLabel(b.eventType),b.eventName].filter(Boolean).map(x=>`<span class="tag">${esc(x)}</span>`).join("");
-      return `<article class="admin-item" data-booking-card="${esc(b.id)}"><div class="admin-item-head"><div><h4>${esc(b.venue)} · ${esc(b.room)}</h4><p class="muted" style="margin:0">${bookingContactLine(b,area)} · ${esc(b.date)} в ${esc(b.time)} · ${b.hours} ч · ${b.guests} гостей</p></div><span class="status ${esc(status)}">${statusLabel(status)}</span></div>${bookingFlow(status)}<div class="admin-meta">${priorityTags}<span class="tag">${money(b.total||0)}</span><span class="tag">${prepayText(b)}</span>${eventTags}${serviceTags}<span class="tag">${windows} окон в комнате</span>${p?`<span class="tag">предложено ${esc(p.date)} в ${esc(p.time)} на ${p.hours} ч</span>`:""}</div>${b.comment?`<p class="muted" style="margin:10px 0 0">Комментарий: ${esc(b.comment)}</p>`:""}${cancelMeta(b)}${bookingHistoryHtml(b,area)}${bookingInternalNote(b,area)}<div class="admin-actions">${bookingActions(b,area)}</div></article>`;
+      return `<article class="admin-item" data-booking-card="${esc(b.id)}"><div class="admin-item-head"><div><h4>${esc(b.venue)} · ${esc(b.room)}</h4><p class="muted" style="margin:0">${bookingContactLine(b,area)} · ${esc(b.date)} в ${esc(b.time)} · ${b.hours} ч · ${b.guests} гостей</p></div><span class="status ${esc(status)}">${statusLabel(status)}</span></div>${bookingFlow(status)}<div class="admin-meta">${priorityTags}<span class="tag">${money(b.total||0)}</span><span class="tag">${prepayText(b)}</span>${paymentMetaTags(b)}${eventTags}${serviceTags}<span class="tag">${windows} окон в комнате</span>${p?`<span class="tag">предложено ${esc(p.date)} в ${esc(p.time)} на ${p.hours} ч</span>`:""}</div>${b.comment?`<p class="muted" style="margin:10px 0 0">Комментарий: ${esc(b.comment)}</p>`:""}${cancelMeta(b)}${bookingHistoryHtml(b,area)}${bookingInternalNote(b,area)}<div class="admin-actions">${bookingActions(b,area)}</div></article>`;
     }
     function renderFavorites(){
       const saved=[...favorites()].map(id=>rooms.find(r=>r.id===id)).filter(Boolean);
@@ -1770,6 +1790,7 @@
       const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=[...seedReviews,...customReviews()],adminCounts={new:0,payment:0,booked:0,history:0};
       books.forEach(b=>adminCounts[partnerBookingGroup(b)]++);
       const pending=adminCounts.new,confirmed=adminCounts.payment+adminCounts.booked,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
+      const paidBooks=books.filter(isPrepayPaid),refundPendingBooks=books.filter(b=>b.paymentStatus==="refund_pending"),refundedBooks=books.filter(b=>b.paymentStatus==="refunded");
       const adminBaseBooks=adminBookingFilter==="all"?books:books.filter(b=>partnerBookingGroup(b)===adminBookingFilter),filteredBooks=sortBookingQueue(filterBookingQueue(books,adminBookingFilter,adminBookingDateFilter,adminBookingEventFilter)),bookingRows=filteredBooks.map(b=>bookingCard(b,"admin")).join("");
       const adminFilters=[["new","Новые",adminCounts.new],["payment","Ждут оплату",adminCounts.payment],["booked","Оплачены",adminCounts.booked],["history","История",adminCounts.history],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${adminBookingFilter===id?"active":""}" data-admin-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
       const adminQueue=bookingQueueControls(adminBaseBooks,"admin",adminBookingDateFilter,adminBookingEventFilter);
@@ -1793,7 +1814,7 @@
         </div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>История действий</h3>${renderActivity(10)}</section>
-          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Оплаты по заявкам</h4><p class="muted" style="margin:0">Показываем внесённые предоплаты и количество оплаченных броней. Детальную экономику лучше держать в закрытом отчёте.</p></div></div><div class="admin-meta"><span class="tag">${money(books.filter(isPrepayPaid).reduce((s,b)=>s+(b.prepay||0),0))}</span><span class="tag">${books.filter(isPrepayPaid).length} оплат</span></div></article></div></aside>
+          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Оплаты и возвраты</h4><p class="muted" style="margin:0">Показываем внесённые предоплаты, ожидающие возвраты и уже закрытые возвраты без публичной экономики сервиса.</p></div></div><div class="admin-meta"><span class="tag ok">${money(paidBooks.reduce((s,b)=>s+(b.prepay||0),0))} оплат</span><span class="tag warn">${refundPendingBooks.length} ждут возврата</span><span class="tag">${refundedBooks.length} возвратов закрыто</span></div></article></div></aside>
         </div>
         <div class="chips"><button class="btn soft" data-partner-login type="button">Открыть кабинет партнёра</button><button class="btn" data-logout type="button">Выйти</button></div>
       </div>`,false,!keep);
@@ -2102,6 +2123,20 @@
       else{adminBookingFilter="history";renderAdminDashboard(true)}
       toast(wasPaid?"Бронь отменена. Нужен разбор возврата предоплаты.":"Заявка отменена.");
     }
+    function completeRefund(id,after="admin"){
+      let list=read(store.bookings,[]);if(!list.length)list=demoBookings();
+      let updated=null;
+      list=list.map(b=>{
+        if(b.id!==id)return b;
+        if(b.paymentStatus!=="refund_pending")return b;
+        updated=appendBookingHistory({...b,paymentStatus:"refunded",refundedAt:new Date().toISOString()},"refund","Возврат предоплаты выполнен",money(b.prepay||0),after);
+        return updated;
+      });
+      if(!updated)return toast("Возврат для этой заявки не ожидается.");
+      saveAdminBookings(list);logActivity("refund","Возврат предоплаты выполнен",`${updated.id} · ${updated.room} · ${money(updated.prepay||0)}`,after);hydrate();notifyUserBooking(updated,"refunded");
+      if(after==="partner"){partnerBookingFilter="history";renderPartnerCabinet(true)}else{adminBookingFilter="history";renderAdminDashboard(true)}
+      toast("Возврат отмечен выполненным.");
+    }
     function updateLeadStatus(payload){
       const [id,status]=payload.split("|");let list=read(store.partner,[]);
       if(!list.length)list=demoPartnerLeads();
@@ -2266,6 +2301,7 @@
       const exportButton=e.target.closest("[data-export]");if(exportButton){exportBookings(exportButton.dataset.export);return}
       const bookingStatus=e.target.closest("[data-booking-status]");if(bookingStatus){updateBookingStatus(bookingStatus.dataset.bookingStatus,bookingStatus.dataset.bookingAfter||"admin");return}
       const cancelBooking=e.target.closest("[data-cancel-booking]");if(cancelBooking){renderCancelBooking(cancelBooking.dataset.cancelBooking);return}
+      const refundBooking=e.target.closest("[data-refund-booking]");if(refundBooking){completeRefund(refundBooking.dataset.refundBooking,refundBooking.dataset.refundAfter||"admin");return}
       const proposeBooking=e.target.closest("[data-propose-booking]");if(proposeBooking){renderProposeBooking(proposeBooking.dataset.proposeBooking);return}
       const acceptProposalButton=e.target.closest("[data-accept-proposal]");if(acceptProposalButton){acceptProposal(acceptProposalButton.dataset.acceptProposal);return}
       const declineProposalButton=e.target.closest("[data-decline-proposal]");if(declineProposalButton){declineProposal(declineProposalButton.dataset.declineProposal);return}
