@@ -309,14 +309,25 @@
     }
     .detail-card,.price-box{padding:16px}
     .price-box{position:sticky;top:86px}
-    .windows{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-    .window{
-      min-height:38px;border:1px solid transparent;border-radius:999px;background:var(--mint);
-      color:var(--green);padding:0 12px;font-size:13px;font-weight:900;transition:.18s ease;
+    .selected-window-card{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;
+      border:1px solid rgba(184,95,77,.22);border-radius:16px;background:var(--paper-2);padding:11px 12px;
     }
-    .window:hover{border-color:#e1b5a7;background:#fff}
+    .selected-window-card span{display:block;color:var(--muted);font-size:12px;font-weight:850}
+    .selected-window-card strong{display:block;margin-top:2px;font-size:15px}
+    .selected-window-card em{font-style:normal;color:var(--green);font-size:12px;font-weight:950;white-space:nowrap}
+    .windows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
+    .window{
+      min-height:64px;border:1px solid transparent;border-radius:17px;background:var(--mint);
+      color:var(--green);padding:10px 11px;text-align:left;font-size:13px;font-weight:900;transition:.18s ease;
+    }
+    .window strong,.window span{display:block}
+    .window strong{font-size:15px;line-height:1.05}
+    .window span{margin-top:6px;color:inherit;font-size:11px;line-height:1.25;opacity:.78}
+    .window:hover{border-color:#e1b5a7;background:#fff;transform:translateY(-1px)}
     .window:active{transform:scale(.98)}
-    .window.active{border-color:var(--green);background:var(--green);color:#fff}
+    .window.active{border-color:var(--green);background:var(--green);color:#fff;box-shadow:0 12px 26px rgba(97,75,66,.16)}
+    .window.empty{grid-column:1/-1;background:#fff;color:var(--muted);text-align:center}
     .availability-week{display:flex;gap:8px;margin-top:10px;overflow:auto;padding-bottom:3px;scrollbar-width:none}
     .availability-week::-webkit-scrollbar{display:none}
     .availability-day{
@@ -336,11 +347,21 @@
     .day-timeline.empty{display:block;padding:12px;color:var(--muted);font-size:13px;font-weight:850}
     .day-segment{
       min-width:18px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:11px;
-      padding:0 6px;font-size:11px;font-weight:950;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      position:relative;border:0;padding:0 6px;font-size:11px;font-weight:950;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
+    button.day-segment{cursor:pointer}
     .day-segment.free{background:var(--mint);color:var(--green)}
     .day-segment.busy{background:#f2ded8;color:#9b6048}
-    .day-segment.selected{outline:2px solid var(--green);outline-offset:-2px;background:#fff;color:var(--green)}
+    .day-segment.free:hover{background:#fff;border:1px solid #e1b5a7}
+    .day-segment.selected{background:#fff;color:var(--green)}
+    .selected-time-pin{
+      position:absolute;top:5px;bottom:5px;width:3px;border-radius:999px;background:var(--green);transform:translateX(-50%);
+      box-shadow:0 0 0 3px rgba(255,255,255,.86);
+    }
+    .selected-time-pin span{
+      position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:999px;background:var(--green);
+      color:#fff;padding:3px 6px;font-size:10px;font-weight:950;
+    }
     .timeline-caption,.timeline-legend{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:var(--muted);font-size:12px;font-weight:800}
     .timeline-caption{justify-content:space-between;margin-top:8px}
     .timeline-legend{margin-top:7px}
@@ -661,6 +682,8 @@
       .gallery-slide{height:300px}
       .thumbs{display:none}
       .detail-title h2{font-size:34px}
+      .windows{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .selected-window-card{align-items:flex-start;flex-direction:column}
       .card-actions{grid-template-columns:1fr 1fr;gap:8px}
       .card-actions .btn{min-height:42px}
       .queue-event select{width:100%;min-width:0}
@@ -1389,6 +1412,10 @@
       const start=selected&&selected>=today?selected:today;
       return Array.from({length:7},(_,i)=>dayAvailability(r,shiftDate(start,i))).map(x=>`<button class="availability-day ${x.date===selected?"active":""} ${x.wins.length?"":"empty"}" data-availability-day="${r.id}|${x.date}" type="button"><span>${weekdayLabel(x.date)}</span><strong>${shortDateLabel(x.date)}</strong><small>${x.wins.length?`${x.wins.length} окон · до ${x.best} ${hourWord(x.best)}`:"нет окон"}</small></button>`).join("");
     }
+    function firstWindowInSegment(r,date,a,b){
+      const item=freeWindows(r,date).find(w=>{const h=slotHour(r,w.time,date);return h>=a&&h<b});
+      return item?.time||"";
+    }
     function dayTimelineSegments(r,date){
       const work=effectiveWork(r,date);if(!work)return {work:null,segments:[]};
       const [start,end]=work,merged=[];
@@ -1408,7 +1435,10 @@
       const {work,segments}=dayTimelineSegments(r,date);
       if(!work)return `<div class="day-timeline empty">В этот день площадка не работает или закрыта вручную.</div>`;
       const selected=chosen?slotHour(r,chosen,date):null,total=work[1]-work[0],free=segments.filter(x=>x.type==="free").reduce((s,x)=>s+x.b-x.a,0),busy=Math.max(0,total-free);
-      const body=segments.map(x=>{const len=Math.max(.5,x.b-x.a),isSelected=x.type==="free"&&selected!==null&&selected>=x.a&&selected<x.b,label=x.b-x.a>=2?intervalText(x.a,x.b):hourLabel(x.a);return `<span class="day-segment ${x.type} ${isSelected?"selected":""}" style="flex:${len} 1 0" title="${x.type==="free"?"Свободно":"Занято"}: ${intervalText(x.a,x.b)}">${label}</span>`}).join("");
+      const body=segments.map(x=>{const len=Math.max(.5,x.b-x.a),isSelected=x.type==="free"&&selected!==null&&selected>=x.a&&selected<x.b,label=x.b-x.a>=2?intervalText(x.a,x.b):hourLabel(x.a),pin=isSelected?`<i class="selected-time-pin" style="left:${Math.min(94,Math.max(6,((selected-x.a)/(x.b-x.a))*100))}%"><span>${chosen}</span></i>`:"",content=`<span class="segment-label">${label}</span>${pin}`;
+        if(x.type==="free"){const start=firstWindowInSegment(r,date,x.a,x.b);return start?`<button class="day-segment free ${isSelected?"selected":""}" style="flex:${len} 1 0" data-window-range="${r.id}|${date}|${x.a}|${x.b}" type="button" title="Нажмите ближе к нужному времени. Свободно: ${intervalText(x.a,x.b)}">${content}</button>`:`<span class="day-segment free ${isSelected?"selected":""}" style="flex:${len} 1 0" title="Свободно: ${intervalText(x.a,x.b)}">${content}</span>`}
+        return `<span class="day-segment busy" style="flex:${len} 1 0" title="Занято: ${intervalText(x.a,x.b)}">${content}</span>`;
+      }).join("");
       return `<div class="timeline-caption"><span>День: ${intervalText(work[0],work[1])}</span><span>${durationText(free)} свободно · ${durationText(busy)} занято</span></div><div class="day-timeline" aria-label="Доступность помещения на выбранный день">${body}</div><div class="timeline-legend"><span><i class="free"></i>свободно</span><span><i class="busy"></i>занято</span><span><i class="selected"></i>выбранное окно</span></div>`;
     }
     function betterWindow(r,date,chosen,max){return freeWindows(r,date).filter(w=>w.max>max&&w.time!==chosen).sort((a,b)=>b.max-a.max)[0]}
@@ -1791,8 +1821,9 @@
           <div class="availability-week">${availabilityWeek(r,state.date)}</div>
           <div class="form"><div class="field"><label>Дата</label><input data-detail-date="${r.id}" type="date" min="${today}" value="${state.date}"></div><div class="field"><label>На сколько часов</label><select data-detail-hours="${r.id}">${[1,2,3,4,5,6].map(x=>`<option value="${x}" ${x===hours?"selected":""} ${(x<r.min||max&&x>max)?"disabled":""}>${x} ${x===1?"час":x<5?"часа":"часов"}</option>`).join("")}</select></div></div>
           ${roomDayTimeline(r,state.date,chosen)}
-          <h3 style="margin:14px 0 0">Свободные окна</h3>
-          <div class="windows">${wins.length?wins.map(w=>`<button class="window ${w.time===chosen?"active":""}" data-window="${r.id}|${w.time}" type="button">${w.time} · до ${w.max} ч</button>`).join(""):`<span class="window">Нет окон на эту дату</span>`}</div>
+          <div class="selected-window-card"><div><span>Выбранное начало</span><strong>${chosen&&max?`${chosen} · ${hours} ${hourWord(hours)}`:"Пока не выбрано"}</strong></div><em>${chosen&&max?`доступно до ${max} ${hourWord(max)}`:"выберите окно"}</em></div>
+          <h3 style="margin:14px 0 0">Выберите начало брони</h3>
+          <div class="windows">${wins.length?wins.map(w=>`<button class="window ${w.time===chosen?"active":""}" data-window="${r.id}|${w.time}" type="button"><strong>${w.time}</strong><span>${w.time===chosen?"Выбрано":"Начать здесь"} · до ${w.max} ${hourWord(w.max)}</span></button>`).join(""):`<span class="window empty">Нет окон на эту дату</span>`}</div>
           ${note?`<p class="note">${esc(note)}</p>`:""}
           <div style="margin-top:12px"><div class="row"><span class="muted">${hours} ч × ${money(r.price)}</span><strong>/ час</strong></div><div class="row"><span class="muted">Предоплата после подтверждения</span><strong>${money(prepay)}</strong></div></div>
           <button class="btn primary" data-book="${r.id}" type="button" style="width:100%;margin-top:12px">Забронировать</button>
@@ -2468,6 +2499,7 @@
       const adminVenue=e.target.closest("[data-admin-venue]");if(adminVenue){updateVenueAdmin(adminVenue.dataset.adminVenue);return}
       const adminRoom=e.target.closest("[data-admin-room]");if(adminRoom){updateRoomAdmin(adminRoom.dataset.adminRoom);return}
       const reviewStatus=e.target.closest("[data-review-status]");if(reviewStatus){updateReviewStatus(reviewStatus.dataset.reviewStatus);return}
+      const range=e.target.closest("[data-window-range]");if(range){const [id,date,aRaw,bRaw]=range.dataset.windowRange.split("|"),r=rooms.find(x=>x.id===id),a=Number(aRaw),b=Number(bRaw);if(!r)return;const rect=range.getBoundingClientRect(),ratio=Math.min(1,Math.max(0,(e.clientX-rect.left)/Math.max(1,rect.width))),target=a+(b-a)*ratio,choices=freeWindows(r,date).filter(w=>{const h=slotHour(r,w.time,date);return h>=a&&h<b});const closest=choices.reduce((best,w)=>Math.abs(slotHour(r,w.time,date)-target)<Math.abs(slotHour(r,best.time,date)-target)?w:best,choices[0]);if(closest){state.date=date;state.time=closest.time;E.date.value=date;E.time.value=closest.time;syncDateDisplay();renderSpace(id,true)}return}
       const win=e.target.closest("[data-window]");if(win){const [id,t]=win.dataset.window.split("|");state.time=t;E.time.value=t;renderSpace(id,true);return}
       const room=e.target.closest("[data-open-room]");if(room){renderSpace(room.dataset.openRoom);return}
       const book=e.target.closest("[data-book]");if(book){renderBooking(book.dataset.book);return}
