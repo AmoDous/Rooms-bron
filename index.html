@@ -556,6 +556,18 @@
     .booking-finance .row:last-child{padding-bottom:0}
     .booking-finance .finance-total{font-size:14px}
     .booking-finance .finance-total strong{font-size:15px}
+    .service-sales{display:grid;margin-top:10px}
+    .service-sale{
+      display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:start;
+      padding:10px 0;border-top:1px solid var(--line);
+    }
+    .service-sale:first-child{border-top:0;padding-top:0}
+    .service-sale:last-child{padding-bottom:0}
+    .service-sale strong{display:block;font-size:13px;line-height:1.35}
+    .service-sale span{display:block;margin-top:3px;color:var(--muted);font-size:12px;line-height:1.35}
+    .service-sale-value{text-align:right;white-space:nowrap}
+    .service-sale-value strong{font-size:14px}
+    .service-sales-title{margin:14px 0 0!important;padding-top:12px;border-top:1px solid var(--line)}
     .booking-filters{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
     .booking-filter{
       min-height:38px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--muted);
@@ -1112,8 +1124,34 @@
       return `<div class="booking-finance"><div class="row"><span class="muted">${Number(b.hours)||0} ч × ${money(f.hourPrice)}</span><strong>${money(f.base)}</strong></div>${services.map(x=>`<div class="row"><span class="muted">${esc(x.name)}</span><strong>+ ${money(x.price)}</strong></div>`).join("")}<div class="row finance-total"><span>Итого</span><strong>${money(f.total)}</strong></div><div class="row"><span class="muted">Предоплата 30%</span><strong>${money(f.prepay)}</strong></div></div>`;
     }
     function bookingFinanceStats(list=[]){
-      const totals=list.reduce((acc,b)=>{const f=bookingFinance(b);acc.total+=f.total;acc.extras+=f.extras;acc.prepay+=f.prepay;if(f.hasServices)acc.withServices++;return acc},{total:0,extras:0,prepay:0,withServices:0});
-      return {...totals,count:list.length,avg:list.length?Math.round(totals.total/list.length):0};
+      const active=list.filter(b=>!["cancelled","expired"].includes(effectiveBookingStatus(b)));
+      const totals=active.reduce((acc,b)=>{const f=bookingFinance(b);acc.total+=f.total;acc.extras+=f.extras;acc.prepay+=f.prepay;if(f.hasServices)acc.withServices++;return acc},{total:0,extras:0,prepay:0,withServices:0});
+      return {...totals,count:active.length,avg:active.length?Math.round(totals.total/active.length):0};
+    }
+    function bookingCountWord(n){
+      const value=Math.abs(Number(n)||0)%100,last=value%10;
+      if(value>10&&value<20)return "заявок";
+      if(last===1)return "заявка";
+      if(last>=2&&last<=4)return "заявки";
+      return "заявок";
+    }
+    function serviceSalesStats(list=[]){
+      const active=list.filter(b=>!["cancelled","expired"].includes(effectiveBookingStatus(b))),sales=new Map();
+      active.forEach(b=>{
+        const counted=new Set();
+        (b.services||[]).forEach(service=>{
+          const name=String(service.name||"Дополнительная услуга").trim()||"Дополнительная услуга",key=name.toLocaleLowerCase("ru-RU"),item=sales.get(key)||{name,count:0,total:0};
+          if(!counted.has(key)){item.count++;counted.add(key)}
+          item.total+=Math.max(0,Number(service.price)||0);
+          sales.set(key,item);
+        });
+      });
+      return [...sales.values()].sort((a,b)=>b.total-a.total||b.count-a.count||a.name.localeCompare(b.name,"ru-RU"));
+    }
+    function serviceSalesHtml(list=[],limit=5){
+      const rows=serviceSalesStats(list).slice(0,limit);
+      if(!rows.length)return `<div class="empty" style="display:block;margin-top:10px">Дополнительные услуги пока не выбраны в активных заявках.</div>`;
+      return `<div class="service-sales">${rows.map(x=>`<div class="service-sale"><div><strong>${esc(x.name)}</strong><span>${x.count} ${bookingCountWord(x.count)}, средняя цена ${money(Math.round(x.total/x.count))}</span></div><div class="service-sale-value"><strong>${money(x.total)}</strong><span>в заявках</span></div></div>`).join("")}</div>`;
     }
     const eventOptions=[
       ["birthday","День рождения"],
@@ -2115,7 +2153,7 @@
         </div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>История действий</h3>${renderActivity(10)}</section>
-          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Оплаты и возвраты</h4><p class="muted" style="margin:0">Показываем предоплаты, средний чек и вклад допуслуг без публичной экономики сервиса.</p></div></div><div class="admin-meta"><span class="tag ok">${money(paidBooks.reduce((s,b)=>s+bookingFinance(b).prepay,0))} оплат</span><span class="tag">${money(adminFinance.total)} заявок</span><span class="tag">${money(adminFinance.extras)} допуслуг</span><span class="tag warn">${refundPendingBooks.length} ждут возврата</span><span class="tag">${refundedBooks.length} возвратов закрыто</span></div></article></div></aside>
+          <aside class="admin-panel"><h3>Финансы демо</h3><div class="admin-list"><article class="admin-item"><div class="admin-item-head"><div><h4>Оплаты и возвраты</h4><p class="muted" style="margin:0">Показываем предоплаты, средний чек и вклад допуслуг без публичной экономики сервиса.</p></div></div><div class="admin-meta"><span class="tag ok">${money(paidBooks.reduce((s,b)=>s+bookingFinance(b).prepay,0))} оплат</span><span class="tag">${money(adminFinance.total)} заявок</span><span class="tag">${money(adminFinance.extras)} допуслуг</span><span class="tag warn">${refundPendingBooks.length} ждут возврата</span><span class="tag">${refundedBooks.length} возвратов закрыто</span></div><h4 class="service-sales-title">Популярные допуслуги</h4>${serviceSalesHtml(books)}</article></div></aside>
         </div>
         <div class="chips"><button class="btn soft" data-partner-login type="button">Открыть кабинет партнёра</button><button class="btn" data-logout type="button">Выйти</button></div>
       </div>`,false,!keep);
@@ -2147,6 +2185,7 @@
         <div class="dash-grid"><div class="dash-card"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(partnerFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(partnerFinance.extras)}</strong></div><div class="dash-card"><span class="muted">В каталоге</span><strong>${publishedIds.length}</strong></div></div>
         <div class="chips"><button class="btn soft" data-partner-notifications type="button">Уведомления${Number(partnerNotice().unread||0)?` · ${Number(partnerNotice().unread)}`:""}</button><button class="btn soft" data-export="partner" type="button">Экспорт моих заявок CSV</button><span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений · занято вручную ${busyTotal} · занято заявками ${bookedTotal}</span></div>
         <div class="partner-editor" data-partner-bookings><div class="admin-item-head"><div><h3>Заявки по вашим помещениям</h3><p class="muted" style="margin:0">Подтверждение здесь сразу обновляет админку Rooms и календарь доступности.</p></div><span class="status">${partnerCounts.new} новых</span></div><div class="booking-filters">${partnerFilters}</div>${partnerQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${partnerEmpty}</div>`}</div></div>
+        <div class="partner-editor"><div class="admin-item-head"><div><h3>Допуслуги в заявках</h3><p class="muted" style="margin:0">Какие услуги гости добавляют к брони и на какую сумму.</p></div><span class="status">${money(partnerFinance.extras)}</span></div>${serviceSalesHtml(books)}</div>
         <div class="partner-editor"><div class="admin-item-head"><div><h3>Отзывы гостей</h3><p class="muted" style="margin:0">Площадка видит опубликованные отзывы и может оставить публичный ответ.</p></div><span class="status review">${partnerReviews.length} отзывов</span></div><div class="review-list">${partnerReviews.length?partnerReviews.map(x=>reviewCard(x,"partner")).join(""):`<div class="empty" style="display:block">Опубликованных отзывов по вашим помещениям пока нет.</div>`}</div></div>
         <div class="partner-shell">
           <form class="partner-editor" id="partnerVenueEdit">
