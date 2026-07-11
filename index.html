@@ -1067,6 +1067,25 @@
     function partnerModeLabel(mode){return mode==="crm"?"только CRM":"CRM + каталог"}
     function subscriptionStatusLabel(status){return ({trial:"тестовый период",active:"подписка активна",overdue:"оплата просрочена"})[status||"active"]||"подписка активна"}
     function subscriptionStatusClass(status){return status==="overdue"?"cancelled":status==="trial"?"review":"paid"}
+    function rankingBoostLabel(value){return Number(value)>0?"поднята в выдаче":Number(value)<0?"понижена в выдаче":"обычная позиция"}
+    function venueHealth(v,list=adminBookings()){
+      const ids=rooms.filter(r=>r.venue===v.id).map(r=>r.id),books=list.filter(b=>ids.some(id=>bookingContainsRoom(b,id))),total=books.length;
+      const cancelled=books.filter(b=>effectiveBookingStatus(b)==="cancelled"),paidCancelled=cancelled.filter(b=>isPrepayPaid(b)||["refund_pending","refunded"].includes(b.paymentStatus)),expired=books.filter(b=>effectiveBookingStatus(b)==="expired"),successful=books.filter(b=>["paid","visited","completed"].includes(effectiveBookingStatus(b)));
+      const responseMinutes=books.filter(b=>b.confirmedAt&&b.created).map(b=>(new Date(b.confirmedAt)-new Date(b.created))/60000).filter(x=>Number.isFinite(x)&&x>=0),avgResponse=responseMinutes.length?Math.round(responseMinutes.reduce((s,x)=>s+x,0)/responseMinutes.length):null;
+      const reviews=allReviews().filter(x=>ids.includes(x.room)&&reviewStatus(x)==="published"),reviewAvg=reviews.length?reviews.reduce((s,x)=>s+Number(x.rating||0),0)/reviews.length:(ids.reduce((s,id)=>s+Number(rooms.find(r=>r.id===id)?.rating||0),0)/Math.max(1,ids.length)),poorReviews=reviews.filter(x=>Number(x.rating)<=3).length;
+      const cancelRate=total?cancelled.length/total:0,expiredRate=total?expired.length/total:0;let score=70+Math.min(12,successful.length*2)+(reviewAvg>=4.7?8:reviewAvg>=4.3?4:0)-(cancelRate*30)-(expiredRate*16)-(paidCancelled.length*12)-(poorReviews*5)+(avgResponse!==null?(avgResponse<=30?6:avgResponse>180?-12:avgResponse>90?-6:0):0);
+      score=Math.max(0,Math.min(100,Math.round(score)));
+      const signals=[];
+      if(paidCancelled.length)signals.push({level:"danger",title:`Отмен после оплаты: ${paidCancelled.length}`,detail:"Требуется проверить причины и возвраты."});
+      if(cancelRate>=.25&&total>=3)signals.push({level:"danger",title:`Высокая доля отмен: ${Math.round(cancelRate*100)}%`,detail:`${cancelled.length} из ${total} заявок отменены.`});
+      if(expiredRate>=.3&&total>=3)signals.push({level:"warn",title:`Не оплачено после подтверждения: ${expired.length}`,detail:"Возможна проблема с подтверждением или условиями брони."});
+      if(avgResponse!==null&&avgResponse>90)signals.push({level:"warn",title:`Долгий ответ: ${avgResponse} мин.`,detail:"Стоит быстрее обрабатывать новые заявки."});
+      if(poorReviews)signals.push({level:"warn",title:`Низких оценок: ${poorReviews}`,detail:"Есть отзывы на 3 балла или ниже."});
+      if(total&&!signals.length)signals.push({level:"good",title:"Критичных сигналов нет",detail:"Площадка стабильно обрабатывает заявки."});
+      if(!total)signals.push({level:"neutral",title:"Недостаточно данных",detail:"Подсказки появятся после первых заявок."});
+      return {score,total,cancelled:cancelled.length,paidCancelled:paidCancelled.length,expired:expired.length,successful:successful.length,avgResponse,reviewAvg:Number(reviewAvg||0),signals,suspicious:signals.filter(x=>x.level==="danger"||x.level==="warn")};
+    }
+    function healthStatusClass(score){return score>=80?"paid":score>=60?"review":"cancelled"}
     function trialDaysLeft(venueData={}){
       if(!venueData.trialStartedAt)return partnerTariffConfig.trialDays;
       const end=new Date(venueData.trialStartedAt).getTime()+partnerTariffConfig.trialDays*86400000;
@@ -1633,12 +1652,12 @@
       const ids=scope==="partner"?partnerRoomIds():null;
       const rows=(scope==="partner"?partnerBookings(ids):adminBookings()).map(b=>{
         const status=effectiveBookingStatus(b),publicPhone=scope==="admin"||hasPaymentRecord(b)?b.phone:"скрыт до предоплаты";
-        const finance=bookingSettlement(b),batch=payoutForBooking(b.id);
+        const finance=bookingSettlement(b),batch=payoutForBooking(b.id),bookingRoom=rooms.find(r=>bookingContainsRoom(b,r.id)),bookingVenue=bookingRoom?venue(bookingRoom):venues.find(v=>v.title===b.venue),health=bookingVenue?venueHealth(bookingVenue,adminBookings()):null;
         const last=bookingHistory(b)[0],lastAction=last?`${historyActorLabel(last.actor)}: ${last.title}${last.details?` · ${last.details}`:""}`:"";
         const base=[b.name,publicPhone,b.date,b.time,b.hours,b.room,extraRoomsText(b.extraRooms||[]),eventLabel(b.eventType)||"",b.eventName||"",bookingServicesText(b.services||[]),finance.mainBase,finance.extraRoomsTotal,finance.extras,finance.total,finance.remaining,paymentMethodLabel(bookingPaymentMethod(b)),statusLabel(status),lastAction,b.comment||"",b.internalNote||"",b.policy||bookingPolicyLine(b)||"",finance.partnerAmount,batch?payoutStatusLabel(batch.status):"не сформирована"];
-        return scope==="admin"?[b.venue,b.city,...base,finance.prepay,paymentStatusLabel(b.paymentStatus)||b.paymentStatus||"",finance.commission]:base;
+        return scope==="admin"?[b.venue,b.city,...base,finance.prepay,paymentStatusLabel(b.paymentStatus)||b.paymentStatus||"",finance.commission,b.source||"Rooms",bookingVenue?partnerModeLabel(bookingVenue.partnerMode):"",bookingVenue?rankingBoostLabel(bookingVenue.rankingBoost):"",health?health.suspicious.map(x=>x.title).join("; "):""]:base;
       });
-      const head=scope==="admin"?["Площадка","Город","Клиент","Телефон","Дата","Время","Часы","Основное помещение","Дополнительные помещения","Событие","Название события","Услуги","Основное помещение, сумма","Дополнительные помещения, сумма","Сумма услуг","Итого","Остаток на месте","Способ оплаты остатка","Статус","Последнее действие","Комментарий","Внутренняя заметка","Правила","К выплате партнёру","Статус выплаты","Предоплата","Статус оплаты","Комиссия Rooms"]:["Клиент","Телефон","Дата","Время","Часы","Основное помещение","Дополнительные помещения","Событие","Название события","Услуги","Основное помещение, сумма","Дополнительные помещения, сумма","Сумма услуг","Итого","Остаток на месте","Способ оплаты остатка","Статус","Последнее действие","Комментарий","Внутренняя заметка","Правила","К выплате партнёру","Статус выплаты"];
+      const head=scope==="admin"?["Площадка","Город","Клиент","Телефон","Дата","Время","Часы","Основное помещение","Дополнительные помещения","Событие","Название события","Услуги","Основное помещение, сумма","Дополнительные помещения, сумма","Сумма услуг","Итого","Остаток на месте","Способ оплаты остатка","Статус","Последнее действие","Комментарий","Внутренняя заметка","Правила","К выплате партнёру","Статус выплаты","Предоплата","Статус оплаты","Комиссия Rooms","Источник","Режим партнёра","Позиция в выдаче","Подозрительные сигналы"]:["Клиент","Телефон","Дата","Время","Часы","Основное помещение","Дополнительные помещения","Событие","Название события","Услуги","Основное помещение, сумма","Дополнительные помещения, сумма","Сумма услуг","Итого","Остаток на месте","Способ оплаты остатка","Статус","Последнее действие","Комментарий","Внутренняя заметка","Правила","К выплате партнёру","Статус выплаты"];
       downloadCsv(`rooms-${scope}-bookings-${today}.csv`,[head,...rows]);
       logActivity("export",scope==="admin"?"Экспорт админки":"Экспорт партнёра",`${rows.length} строк`);
       toast("Выгрузка подготовлена в CSV, файл откроется в Excel.");
@@ -2013,6 +2032,10 @@
         return {...g,rooms:roomsSorted,primary:roomsSorted[0],minPrice,maxCapacity,rating,reviews,windows};
       });
     }
+    function sortVenueGroups(groups){
+      const mode=E.sort.value;if(mode!=="rating")return groups;
+      return [...groups].sort((a,b)=>Number(b.venue.rankingBoost||0)-Number(a.venue.rankingBoost||0)||b.rating-a.rating||b.reviews-a.reviews);
+    }
     function pluralRooms(n){return n===1?"1 комната подходит":`${n} комнаты подходят`}
     function renderCatalog(seed){
       const f=filters();
@@ -2020,7 +2043,7 @@
       let arr=seed?rooms.filter(r=>isRoomPublic(r)&&venue(r).city===f.city&&r.type===seed):rooms.filter(r=>roomFits(r,f));
       arr=sortRooms(arr);
       last=arr;
-      const groups=venueSummaries(arr);
+      const groups=sortVenueGroups(venueSummaries(arr));
       lastGroups=groups;
       E.results.innerHTML=groups.map(venueCard).join("");
       E.empty.style.display=groups.length?"none":"block";
@@ -2510,6 +2533,10 @@
       const tariff=partnerTariff(data),trial=tariff.mode==="crm"&&tariff.status==="trial",billing=subscriptionBillingStats(data.venue.id),currentCharge=subscriptionCharge(data);
       return `<div class="partner-editor" data-partner-tariff><div class="admin-item-head"><div><h3>Тариф, начисления и оплаты</h3><p class="muted" style="margin:0">Режим кабинета и публикация в каталоге управляются отдельно.</p></div><span class="status ${billing.overdue?"cancelled":subscriptionStatusClass(tariff.status)}">${billing.overdue?`долг ${money(billing.overdue)}`:tariff.mode==="catalog"?partnerModeLabel(tariff.mode):subscriptionStatusLabel(tariff.status)}</span></div><div class="dash-grid" style="margin-top:12px"><div class="dash-card"><span class="muted">Режим</span><strong style="font-size:18px">${partnerModeLabel(tariff.mode)}</strong></div><div class="dash-card"><span class="muted">Помещений</span><strong>${tariff.roomCount}</strong></div><div class="dash-card"><span class="muted">Текущее начисление</span><strong>${money(currentCharge.total)}</strong></div><div class="dash-card"><span class="muted">Задолженность</span><strong>${money(billing.outstanding)}</strong></div></div>${trial?`<div class="chat-guard">Тестовый период CRM: осталось ${tariff.trialDays} дн. Базовые ${money(partnerTariffConfig.crmMonthly)} пока не начисляются.</div>`:""}<div class="admin-meta"><span class="tag ok">до ${partnerTariffConfig.freeRooms} помещений включено</span>${tariff.extraRooms?`<span class="tag warn">${tariff.extraRooms} × ${money(partnerTariffConfig.extraRoomMonthly)} за дополнительные помещения</span>`:""}${tariff.mode==="crm"?`<span class="tag">${money(partnerTariffConfig.crmMonthly)} базовый CRM</span>`:`<span class="tag">15% с подтверждённых броней</span>`}<span class="tag">Оплачено всего ${money(billing.paid)}</span></div><p class="muted" style="margin:10px 0 0">${tariff.mode==="crm"?"Площадка не показывается клиентам, но календарь, заявки и редактирование данных остаются доступны.":"Площадка участвует в каталоге и принимает заявки Rooms при активной публикации."}</p><h4 class="service-sales-title">История начислений</h4><div class="admin-list" style="margin-top:10px">${billing.list.slice(0,6).map(x=>subscriptionInvoiceCard(x,"partner")).join("")||`<div class="empty" style="display:block">Начислений пока нет.</div>`}</div></div>`;
     }
+    function partnerHealthPanel(data){
+      const liveVenue=venues.find(v=>v.id===data.venue.id)||data.venue,h=venueHealth(liveVenue,partnerBookings(partnerRoomIds(data)));
+      return `<div class="partner-editor" data-partner-health><div class="admin-item-head"><div><h3>Качество работы с заявками</h3><p class="muted" style="margin:0">Подсказки помогают поддерживать актуальный календарь и быстрее получать успешные брони.</p></div><span class="status ${healthStatusClass(h.score)}">${h.score}/100</span></div><div class="dash-grid" style="margin-top:12px"><div class="dash-card"><span class="muted">Успешные</span><strong>${h.successful}</strong></div><div class="dash-card"><span class="muted">Отмены</span><strong>${h.cancelled}</strong></div><div class="dash-card"><span class="muted">Без оплаты</span><strong>${h.expired}</strong></div><div class="dash-card"><span class="muted">Средний ответ</span><strong style="font-size:18px">${h.avgResponse===null?"нет данных":h.avgResponse+" мин."}</strong></div></div><div class="admin-list" style="margin-top:12px">${h.signals.map(signal=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(signal.title)}</h4><p class="muted" style="margin:0">${esc(signal.detail)}</p></div><span class="status ${signal.level==="good"?"paid":signal.level==="danger"?"cancelled":"review"}">${signal.level==="good"?"хорошо":signal.level==="neutral"?"ожидаем данные":"рекомендация"}</span></div></article>`).join("")}</div></div>`;
+    }
     function renderFavorites(){
       const saved=[...favorites()].map(id=>rooms.find(r=>r.id===id)).filter(Boolean);
       const rows=saved.map(r=>{
@@ -2546,6 +2573,8 @@
       const adminEmpty=adminBaseBooks.length?"По выбранной дате и формату события заявок нет. Сбросьте фильтры очереди или выберите другую вкладку.":books.length?`В разделе «${({new:"Новые",payment:"Ждут оплату",booked:"Оплачены",history:"История"})[adminBookingFilter]||"Все"}» заявок пока нет.`:"Заявок пока нет.";
       const leadRows=leads.map(l=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(l.venue)}</h4><p class="muted" style="margin:0">${esc(l.city)} · ${esc(l.address||"адрес уточняется")} · ${esc(l.name||"контакт")} · ${esc(l.phone||"")} ${l.email?`· ${esc(l.email)}`:""}</p></div><span class="status review">${leadStatusLabel(l.status)}</span></div><div class="admin-meta"><span class="tag">${esc(l.type||"тип не указан")}</span><span class="tag">${Number(l.rooms)||1} помещений</span></div><p class="muted" style="margin:9px 0 0">${esc(l.comment||"Комментарий не заполнен")}</p><div class="admin-actions"><button class="btn primary" data-admin-lead="${l.id}|review" type="button">В модерацию</button><button class="btn" data-admin-lead="${l.id}|approved" type="button">Одобрить</button><button class="btn" data-admin-lead="${l.id}|rejected" type="button">Отклонить</button></div></article>`).join("");
       const moderationRows=moderation.slice(0,10).map(x=>moderationCard(x,"admin")).join(""),moderationPending=moderation.filter(x=>x.status==="pending").length;
+      const healthItems=venues.map(v=>({venue:v,health:venueHealth(v,books)})),healthRows=healthItems.map(({venue:v,health:h})=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(v.title)}</h4><p class="muted" style="margin:0">${rankingBoostLabel(v.rankingBoost)} · ${h.total} заявок · рейтинг ${h.reviewAvg.toFixed(1)}</p></div><span class="status ${healthStatusClass(h.score)}">оценка ${h.score}/100</span></div><div class="admin-meta"><span class="tag ok">успешных ${h.successful}</span><span class="tag ${h.cancelled?"warn":""}">отмен ${h.cancelled}</span><span class="tag ${h.expired?"warn":""}">без оплаты ${h.expired}</span><span class="tag">ответ ${h.avgResponse===null?"нет данных":h.avgResponse+" мин."}</span></div><div class="admin-actions"><button class="btn ${Number(v.rankingBoost)>0?"soft":""}" data-admin-venue="${v.id}|rankingBoost|1" type="button">Поднять</button><button class="btn ${!Number(v.rankingBoost)?"soft":""}" data-admin-venue="${v.id}|rankingBoost|0" type="button">Обычно</button><button class="btn ${Number(v.rankingBoost)<0?"soft":""}" data-admin-venue="${v.id}|rankingBoost|-1" type="button">Понизить</button></div></article>`).join("");
+      const riskCount=healthItems.reduce((sum,x)=>sum+x.health.suspicious.length,0),riskRows=healthItems.flatMap(({venue:v,health:h})=>h.suspicious.map(signal=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(v.title)} · ${esc(signal.title)}</h4><p class="muted" style="margin:0">${esc(signal.detail)}</p></div><span class="status ${signal.level==="danger"?"cancelled":"review"}">${signal.level==="danger"?"важно":"проверить"}</span></div></article>`)).join("");
       const roomRows=venues.filter(v=>v.city===state.city||v.city==="Воронеж").map(v=>{
         const pub=v.publicationStatus||"published",cabinet=v.cabinetStatus||"active",mode=v.partnerMode||"catalog",subscription=v.subscriptionStatus||"active",venueRooms=rooms.filter(r=>r.venue===v.id),tariff=v.id===partnerData().venue.id?partnerTariff(partnerData()):null,billing=v.id===partnerData().venue.id?subscriptionBillingStats(v.id):null;
         const roomList=venueRooms.map(r=>{
@@ -2557,7 +2586,7 @@
       openModal(`<div class="admin-dashboard">
         <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. Это v1 на локальных данных, но уже с рабочими статусами.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(adminFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(adminFinance.extras)}</strong></div><div class="dash-card"><span class="muted">Заявки с допами</span><strong>${adminFinance.withServices}</strong></div></div>
-        <div class="chips"><button class="btn soft" data-export="admin" type="button">Экспорт заявок CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span></div>
+        <div class="chips"><button class="btn soft" data-export="admin" type="button">Экспорт заявок CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>Заявки на бронь</h3><div class="booking-filters">${adminFilters}</div>${adminQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${adminEmpty}</div>`}</div></section>
           <aside class="admin-panel"><h3>Изменения партнёра</h3><div class="admin-list">${moderationRows||`<div class="empty" style="display:block">Изменений на проверке пока нет.</div>`}</div><h3 style="margin-top:18px">Обращения в поддержку</h3>${renderSupportQueue("admin",5)}<h3 style="margin-top:18px">Площадки на подключение</h3><div class="admin-list">${leadRows}</div></aside>
@@ -2565,6 +2594,10 @@
         <div class="admin-grid">
           <section class="admin-panel"><h3>Площадки и комнаты</h3><div class="admin-room-table">${roomRows}</div></section>
           <aside class="admin-panel"><h3>Отзывы на модерации</h3><div class="admin-list">${reviews.slice(0,8).map(x=>reviewCard(x,"admin")).join("")||`<div class="empty" style="display:block">Пользовательских отзывов пока нет.</div>`}</div></aside>
+        </div>
+        <div class="admin-grid">
+          <section class="admin-panel"><h3>Рейтинг площадок</h3><p class="muted">Система подсказывает риски, но итоговую позицию в выдаче на MVP задаёт администратор.</p><div class="admin-list">${healthRows}</div></section>
+          <aside class="admin-panel"><h3>Подозрительная активность</h3><div class="admin-list">${riskRows||`<div class="empty" style="display:block">Критичных сигналов по площадкам сейчас нет.</div>`}</div></aside>
         </div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>История действий</h3>${renderActivity(10)}</section>
@@ -2602,6 +2635,7 @@
         <div class="chips"><button class="btn soft" data-partner-notifications type="button">Уведомления${Number(partnerNotice().unread||0)?` · ${Number(partnerNotice().unread)}`:""}</button><button class="btn soft" data-export="partner" type="button">Экспорт моих заявок CSV</button>${pendingModeration?`<span class="status review">На проверке · ${pendingModeration}</span>`:""}<span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений · занято вручную ${busyTotal} · занято заявками ${bookedTotal}</span></div>
         ${partnerTariffPanel(data)}
         ${partnerPayoutPanel(books,data)}
+        ${partnerHealthPanel(data)}
         <div class="partner-editor" data-partner-moderation><div class="admin-item-head"><div><h3>Изменения карточки</h3><p class="muted" style="margin:0">Цена, описание, правила, акции, способы оплаты и фотографии публикуются после проверки Rooms. Расписание и занятость обновляются сразу.</p></div><span class="status ${pendingModeration?"review":"paid"}">${pendingModeration?`${pendingModeration} на проверке`:"нет ожидающих"}</span></div><div class="admin-list">${partnerModeration.slice(0,5).map(x=>moderationCard(x,"partner")).join("")||`<div class="empty" style="display:block">Отправленных изменений пока нет.</div>`}</div></div>
         <div class="partner-editor" data-partner-bookings><div class="admin-item-head"><div><h3>Заявки по вашим помещениям</h3><p class="muted" style="margin:0">Подтверждение здесь сразу обновляет админку Rooms и календарь доступности.</p></div><span class="status">${partnerCounts.new} новых</span></div><div class="booking-filters">${partnerFilters}</div>${partnerQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${partnerEmpty}</div>`}</div></div>
         <div class="partner-editor"><div class="admin-item-head"><div><h3>Допуслуги в заявках</h3><p class="muted" style="margin:0">Какие услуги гости добавляют к брони и на какую сумму.</p></div><span class="status">${money(partnerFinance.extras)}</span></div>${serviceSalesHtml(books)}</div>
@@ -2944,10 +2978,10 @@
       applyPartnerData();applyVenueAdminState();hydrate();notifyPartnerModeration(decided,status);renderAdminDashboard(true);toast(`Изменения «${item.targetTitle}»: ${moderationStatusLabel(status)}.`);
     }
     function updateVenueAdmin(payload){
-      const [id,field,value]=payload.split("|"),allowed=field==="publicationStatus"?["published","review","hidden"]:field==="cabinetStatus"?["active","paused"]:field==="partnerMode"?["catalog","crm"]:field==="subscriptionStatus"?["trial","active","overdue"]:[];
+      const [id,field,value]=payload.split("|"),allowed=field==="publicationStatus"?["published","review","hidden"]:field==="cabinetStatus"?["active","paused"]:field==="partnerMode"?["catalog","crm"]:field==="subscriptionStatus"?["trial","active","overdue"]:field==="rankingBoost"?["-1","0","1"]:[];
       const v=venues.find(x=>x.id===id);
       if(!v||!allowed.includes(value))return toast("Не удалось изменить статус площадки.");
-      const stateMap=venueAdminState(),currentPatch=stateMap[id]||{},patch={[field]:value};
+      const stateMap=venueAdminState(),currentPatch=stateMap[id]||{},patch={[field]:field==="rankingBoost"?Number(value):value};
       if((field==="partnerMode"&&value==="crm"&&(v.partnerMode||"catalog")!=="crm")||(field==="subscriptionStatus"&&value==="trial")){patch.subscriptionStatus="trial";patch.trialStartedAt=new Date().toISOString()}
       const next={...currentPatch,...patch};
       stateMap[id]=next;
@@ -2958,7 +2992,7 @@
         savePartnerData(data);
       }
       applyPartnerData();applyVenueAdminState();ensureSubscriptionBilling();renderCatalog();
-      const label=field==="publicationStatus"?publicationStatusLabel(value):field==="cabinetStatus"?cabinetStatusLabel(value):field==="partnerMode"?partnerModeLabel(value):subscriptionStatusLabel(value);
+      const label=field==="publicationStatus"?publicationStatusLabel(value):field==="cabinetStatus"?cabinetStatusLabel(value):field==="partnerMode"?partnerModeLabel(value):field==="rankingBoost"?rankingBoostLabel(value):subscriptionStatusLabel(value);
       logActivity("venue_status","Rooms изменил статус площадки",`${v.title} · ${label}`,"admin");
       if(data.venue.id===id&&(field==="partnerMode"||field==="subscriptionStatus"))notifyPartnerTariff(data.venue,label);
       renderAdminDashboard(true);toast(`Статус «${v.title}»: ${label}.`);
