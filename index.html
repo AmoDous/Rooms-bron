@@ -1698,8 +1698,8 @@
     function supportForBooking(id){return supportCases().filter(x=>x.bookingId===id).sort((a,b)=>String(b.updated||b.created).localeCompare(String(a.updated||a.created)))}
     function openSupportForBooking(id){return supportForBooking(id).filter(x=>(x.status||"open")!=="closed")}
     function supportButton(b,area){
-      const open=openSupportForBooking(b.id).length,label=open?`Обращение · ${open}`:area==="profile"?"Написать в поддержку":"Поддержка";
-      return `${chatButton(b,area)}<button class="btn soft" data-support-case="${esc(b.id)}|${esc(area)}" type="button">${label}</button>`;
+      const open=openSupportForBooking(b.id).length,postEvent=area==="profile"&&effectiveBookingStatus(b)==="paid"&&bookingHasEnded(b),label=open?`Обращение · ${open}`:postEvent?"Есть проблема":area==="profile"?"Написать в поддержку":"Поддержка",context=postEvent?"|post_event":"";
+      return `${chatButton(b,area)}<button class="btn soft" data-support-case="${esc(b.id)}|${esc(area)}${context}" type="button">${label}</button>`;
     }
     function supportCaseMeta(c){
       const b=adminBookings().find(x=>x.id===c.bookingId);
@@ -1719,11 +1719,11 @@
       return `<div class="support-thread">${(c.messages||[]).map(m=>`<div class="support-message ${esc(m.actor||"admin")}"><strong>${supportActorLabel(m.actor)} · ${new Date(m.created||Date.now()).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</strong><span>${esc(m.text)}</span></div>`).join("")}</div>`;
     }
     function renderSupportCase(payload){
-      const [bookingId,area="profile"]=payload.split("|"),b=adminBookings().find(x=>x.id===bookingId);
+      const [bookingId,area="profile",context=""]=payload.split("|"),b=adminBookings().find(x=>x.id===bookingId);
       if(!b)return toast("Заявка не найдена.");
       const cases=supportForBooking(bookingId),active=cases.find(c=>(c.status||"open")!=="closed")||null,history=cases.map(c=>`<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(c.topic||"Обращение")}</h4><p class="muted" style="margin:0">${(c.messages||[]).length} сообщений · обновлено ${new Date(c.updated||c.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</p></div><span class="status ${supportStatusClass(c.status)}">${supportStatusLabel(c.status)}</span></div>${supportThreadHtml(c)}</article>`).join("");
-      const intro=active?"Добавьте сообщение в открытое обращение.":"Создайте обращение, если по заявке нужен разбор Rooms.";
-      openModal(`<span class="kicker">${esc(b.venue)} · ${esc(b.room)}</span><h2 style="margin:0">Поддержка по заявке</h2><p class="muted">${intro}</p>${history||`<div class="empty" style="display:block;margin-top:12px">По этой заявке обращений пока нет.</div>`}<form id="supportForm" data-booking="${esc(b.id)}" data-case="${esc(active?.id||"")}" data-area="${esc(area)}" style="margin-top:14px"><div class="form"><div class="field full"><label>Тема</label><select name="topic"><option>Вопрос по подтверждению</option><option>Вопрос по оплате</option><option>Отмена или возврат</option><option>Площадка не отвечает</option><option>Другое</option></select></div><div class="field full"><label>Сообщение</label><textarea name="message" minlength="5" placeholder="Опишите, что нужно разобрать по этой заявке" required></textarea></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">${active?"Отправить сообщение":"Создать обращение"}</button><button class="btn" data-close-modal type="button">Закрыть</button></div></form>`,true);
+      const postEvent=context==="post_event",intro=active?"Добавьте сообщение в открытое обращение.":postEvent?"Опишите проблему после посещения. Пока обращение открыто, бронь не завершится автоматически и выплата площадке не будет сформирована.":"Создайте обращение, если по заявке нужен разбор Rooms.";
+      openModal(`<span class="kicker">${esc(b.venue)} · ${esc(b.room)}</span><h2 style="margin:0">${postEvent?"Сообщить о проблеме":"Поддержка по заявке"}</h2><p class="muted">${intro}</p>${history||`<div class="empty" style="display:block;margin-top:12px">По этой заявке обращений пока нет.</div>`}<form id="supportForm" data-booking="${esc(b.id)}" data-case="${esc(active?.id||"")}" data-area="${esc(area)}" style="margin-top:14px"><div class="form"><div class="field full"><label>Тема</label><select name="topic"><option ${postEvent?"selected":""}>Проблема после посещения</option><option ${postEvent?"":"selected"}>Вопрос по подтверждению</option><option>Вопрос по оплате</option><option>Отмена или возврат</option><option>Площадка не отвечает</option><option>Другое</option></select></div><div class="field full"><label>Сообщение</label><textarea name="message" minlength="5" placeholder="${postEvent?"Что произошло и какая помощь нужна":"Опишите, что нужно разобрать по этой заявке"}" required></textarea></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">${active?"Отправить сообщение":"Создать обращение"}</button><button class="btn" data-close-modal type="button">Закрыть</button></div></form>`,true);
     }
     function submitSupportCase(form){
       const bookingId=form.dataset.booking,caseId=form.dataset.case,area=form.dataset.area||"profile",fd=new FormData(form),text=String(fd.get("message")||"").trim(),topic=String(fd.get("topic")||"Обращение по заявке");
@@ -2680,7 +2680,8 @@
         }
         if(status==="awaiting_payment")return `<button class="btn primary" data-pay-booking="${b.id}" type="button">Внести предоплату ${money(bookingFinance(b).prepay)}</button><button class="btn" data-cancel-booking="${b.id}|client|profile" type="button">Отменить заявку</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Площадка подтвердила время. Слот удерживается на 15 минут, после предоплаты он будет окончательно занят.</p>`;
         if(status==="pending")return `<button class="btn" data-cancel-booking="${b.id}|client|profile" type="button">Отменить заявку</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Площадка проверяет доступность и подтвердит заявку.</p>`;
-        if(status==="paid")return `${receiptButton(b,"profile")}<button class="btn" data-cancel-booking="${b.id}|client|profile" type="button">Запросить отмену</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Предоплата внесена. Чек хранится в этой заявке, остаток оплачивается на площадке.</p>`;
+        if(status==="paid")return bookingHasEnded(b)?`<button class="btn primary" data-client-complete="${b.id}" type="button">Подтвердить, что всё прошло</button>${receiptButton(b,"profile")}<p class="muted" style="flex-basis:100%;margin:2px 0 0">Подтвердите завершение, чтобы открыть отзыв. Если возникла проблема, используйте кнопку поддержки ниже.</p>`:`${receiptButton(b,"profile")}<button class="btn" data-cancel-booking="${b.id}|client|profile" type="button">Запросить отмену</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Предоплата внесена. Чек хранится в этой заявке, остаток оплачивается на площадке.</p>`;
+        if(status==="visited"||status==="completed")return `<button class="btn primary" data-open-room="${esc(b.roomId)}" type="button">Оставить отзыв</button>${receiptButton(b,"profile")}<p class="muted" style="flex-basis:100%;margin:2px 0 0">Посещение завершено. Отзыв можно оставить только по этой подтверждённой брони.</p>`;
         const text=status==="pending"?"Площадка проверяет доступность и подтвердит заявку.":status==="paid"?"Предоплата внесена. После посещения можно будет оставить отзыв.":status==="expired"?"Время на предоплату истекло. Слот снова доступен в каталоге.":status==="visited"||status==="completed"?"Посещение состоялось. Теперь можно оставить отзыв в карточке помещения.":"Заявка отменена.";
         return `<p class="muted" style="margin:10px 0 0">${text}</p>`;
       }
@@ -2688,7 +2689,7 @@
       if(status==="pending")return `<button class="btn primary" data-booking-status="${b.id}|awaiting_payment" ${after} type="button">Подтвердить и отправить на оплату</button><button class="btn" data-propose-booking="${b.id}|${area}" type="button">Предложить время</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
       if(status==="proposed")return `<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Изменить предложение</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
       if(status==="awaiting_payment")return `<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button>`;
-      if(status==="paid")return `<button class="btn primary" data-booking-status="${b.id}|visited" ${after} type="button">Посещение состоялось</button>${receiptButton(b,area)}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
+      if(status==="paid")return bookingHasEnded(b)?`<button class="btn primary" data-booking-status="${b.id}|visited" ${after} type="button">Посещение состоялось</button>${receiptButton(b,area)}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`:`${receiptButton(b,area)}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Завершить бронь можно после окончания мероприятия.</p>`;
       if(status==="cancelled"&&b.paymentStatus==="refund_pending"){
         const refundButton=area==="admin"?`<button class="btn primary" data-refund-booking="${b.id}" data-refund-after="${area}" type="button">Отметить возврат ${money(bookingFinance(b).prepay)}</button>`:"";
         return `${refundButton}${receiptButton(b,area)}<p class="muted" style="flex-basis:100%;margin:2px 0 0">Бронь отменена после предоплаты. Возврат ожидает обработки.</p>`;
@@ -2733,6 +2734,7 @@
     function bookingEndMs(b){
       if(!b?.date||!b?.time)return 0;const room=rooms.find(r=>r.id===b.roomId),base=new Date(`${b.date}T00:00:00`),startHour=room?slotHour(room,b.time,b.date):hour(b.time);return base.getTime()+(startHour+Number(b.hours||1))*3600000;
     }
+    function bookingHasEnded(b){const end=bookingEndMs(b);return !!end&&Date.now()>=end}
     function autoCompleteBookings(){
       const source=storedBookings();if(!source.length)return;
       const completed=[];let changed=false,list=source.map(b=>{if(effectiveBookingStatus(b)!=="paid"||Date.now()<bookingEndMs(b)+24*3600000||openSupportForBooking(b.id).length)return b;changed=true;const next=appendBookingHistory({...b,status:"completed",completedAt:new Date().toISOString(),completedAutomatically:true},"complete","Бронь завершена автоматически","Прошло 24 часа после мероприятия, открытых обращений нет.","system");completed.push(next);return next});
@@ -3130,11 +3132,23 @@
       if(area==="partner")renderPartnerCabinet(true);else renderAdminDashboard(true);
       toast("Внутренняя заметка сохранена.");
     }
+    function completeBookingByClient(id){
+      const acc=current();if(!acc||isAdmin(acc)||isAccountant(acc))return renderAuth();
+      let list=read(store.bookings,[]),item=list.find(b=>b.id===id);
+      if(!item||phone(item.phone)!==phone(acc.phone))return toast("Эта бронь привязана к другому кабинету.");
+      if(effectiveBookingStatus(item)!=="paid")return toast("Эта бронь уже завершена или недоступна для подтверждения.");
+      if(!bookingHasEnded(item))return toast("Подтвердить завершение можно после окончания мероприятия.");
+      if(openSupportForBooking(id).length)return toast("По брони открыто обращение. Сначала дождитесь его решения.");
+      const completedAt=new Date().toISOString();
+      list=list.map(b=>b.id===id?appendBookingHistory({...b,status:"completed",completedAt,completedByClient:true},"client_complete","Клиент подтвердил завершение","Посещение прошло, отзыв доступен.","client"):b);
+      item=list.find(b=>b.id===id);saveAdminBookings(list);logActivity("booking_complete","Клиент подтвердил завершение",`${item.id} · ${item.room}`,"client");hydrate();profileBookingFilter="completed";renderProfile(true);toast("Бронь завершена. Теперь можно оставить отзыв.");
+    }
     function updateBookingStatus(payload,after="admin"){
       const [id,status]=payload.split("|");let list=read(store.bookings,[]);
       if(!list.length)list=demoBookings();
       const currentBooking=list.find(b=>b.id===id),mainRoom=rooms.find(room=>room.id===currentBooking?.roomId);
       if(currentBooking&&mainRoom&&(status==="awaiting_payment"||status==="confirmed")&&combinedBookingCapacity(mainRoom,currentBooking.extraRooms||[],currentBooking.date,currentBooking.time)<Number(currentBooking.hours))return toast("Подтвердить заявку нельзя: одно из выбранных помещений уже занято.");
+      if(currentBooking&&(status==="visited"||status==="completed")&&!bookingHasEnded(currentBooking))return toast("Завершить бронь можно только после окончания мероприятия.");
       list=list.map(b=>{
         if(b.id!==id)return b;
         let next;
@@ -3512,6 +3526,7 @@
       const payBookingButton=e.target.closest("[data-pay-booking]");if(payBookingButton){renderPayment(payBookingButton.dataset.payBooking);return}
       const paymentReceipt=e.target.closest("[data-payment-receipt]");if(paymentReceipt){renderPaymentReceipt(paymentReceipt.dataset.paymentReceipt);return}
       const paymentBack=e.target.closest("[data-payment-back]");if(paymentBack){const area=paymentBack.dataset.paymentBack;if(area==="admin")renderAdminDashboard(true);else if(area==="accountant")renderAccountantDashboard(true);else if(area==="partner")renderPartnerCabinet(true);else renderProfile(true);return}
+      const clientComplete=e.target.closest("[data-client-complete]");if(clientComplete){completeBookingByClient(clientComplete.dataset.clientComplete);return}
       const adminBooking=e.target.closest("[data-admin-booking]");if(adminBooking){updateBookingStatus(adminBooking.dataset.adminBooking);return}
       const adminFilter=e.target.closest("[data-admin-booking-filter]");if(adminFilter){adminBookingFilter=adminFilter.dataset.adminBookingFilter;renderAdminDashboard(true);return}
       const adminDateFilter=e.target.closest("[data-admin-booking-date]");if(adminDateFilter){adminBookingDateFilter=adminDateFilter.dataset.adminBookingDate;renderAdminDashboard(true);return}
