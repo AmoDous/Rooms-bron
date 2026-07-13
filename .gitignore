@@ -5,3 +5,7 @@ assets-pages/
 .codex/
 *.tmp
 *.log
+server/node_modules/
+server/dist/
+server/coverage/
+server/.env

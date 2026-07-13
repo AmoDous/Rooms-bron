@@ -30,10 +30,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status, database, time]
+                required: [status, database, storage, time]
                 properties:
                   status: {type: string, const: ok}
                   database: {type: string, enum: [up, down]}
+                  storage: {type: string, enum: [memory, postgresql]}
                   time: {type: string, format: date-time}
 
   /v1/cities:
@@ -542,7 +543,8 @@ components:
       name: roomId
       in: path
       required: true
-      schema: {type: string, format: uuid}
+      description: Permanent UUID or a legacy public slug during frontend migration.
+      schema: {type: string}
     BookingId:
       name: bookingId
       in: path
@@ -631,9 +633,10 @@ components:
 
     Venue:
       type: object
-      required: [id, title, city, address, publicationStatus, partnerMode]
+      required: [id, slug, title, city, address, publicationStatus, partnerMode]
       properties:
         id: {type: string, format: uuid}
+        slug: {type: string}
         title: {type: string}
         city: {type: string}
         address: {type: string}
@@ -641,17 +644,20 @@ components:
         longitude: {type: [number, 'null']}
         description: {type: [string, 'null']}
         rules: {type: [string, 'null']}
+        amenities: {type: array, items: {type: string}}
         publicationStatus: {type: string, enum: [review, published, hidden]}
         partnerMode: {type: string, enum: [catalog, crm]}
         paymentMethods: {type: array, items: {type: string, enum: [card, cash]}}
 
     RoomSummary:
       type: object
-      required: [id, venue, title, type, capacityMax, pricePerHour, minimumHours, photos]
+      required: [id, slug, venue, title, subtitle, type, capacityMax, pricePerHour, minimumHours, photos]
       properties:
         id: {type: string, format: uuid}
+        slug: {type: string}
         venue: {$ref: '#/components/schemas/Venue'}
         title: {type: string}
+        subtitle: {type: string}
         type: {type: string}
         capacityMin: {type: integer, minimum: 1}
         capacityMax: {type: integer, minimum: 1}
@@ -660,6 +666,7 @@ components:
         rating: {type: number, minimum: 0, maximum: 5}
         reviewCount: {type: integer, minimum: 0}
         features: {type: array, items: {type: string}}
+        tags: {type: array, items: {type: string}}
         promotion: {type: [string, 'null']}
         photos: {type: array, items: {type: string, format: uri}}
         nearestWindows: {type: array, items: {$ref: '#/components/schemas/AvailabilityWindow'}}
