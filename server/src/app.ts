@@ -1,9 +1,13 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import type {
   AvailabilityWindow,
+  PublicReviewPage,
   PublicRoomDetail,
   PublicRoomSummary,
   Room,
@@ -49,6 +53,15 @@ interface AvailabilityBody {
   preferredTime?: string;
   guests?: number;
 }
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const assetContentTypes: Readonly<Record<string, string>> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
 
 class ApiError extends Error {
   constructor(
@@ -127,7 +140,7 @@ function errorPayload(code: string, message: string, details: unknown[] = []) {
 export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   const config: AppConfig = {
     publicSiteUrl: overrides.publicSiteUrl ?? "https://amodous.github.io/Rooms-bron",
-    corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "https://amodous.github.io"],
+    corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
     logger: overrides.logger ?? false,
     repository: overrides.repository ?? new MemoryCatalogRepository(),
   };
@@ -154,6 +167,25 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
 
   app.setNotFoundHandler((request, reply) => {
     return reply.status(404).send({ ...errorPayload("ROUTE_NOT_FOUND", "Маршрут API не найден."), requestId: request.id });
+  });
+
+  app.get("/", async (_request, reply) => {
+    const html = await readFile(resolve(projectRoot, "index.html"));
+    return reply.header("Cache-Control", "no-store").type("text/html; charset=utf-8").send(html);
+  });
+
+  app.get<{ Params: { assetName: string } }>("/assets/:assetName", {
+    schema: {
+      params: {
+        type: "object",
+        required: ["assetName"],
+        properties: { assetName: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]*\\.(jpg|jpeg|png|webp|svg)$" } },
+      },
+    },
+  }, async (request, reply) => {
+    const extension = request.params.assetName.split(".").pop()?.toLowerCase() ?? "";
+    const asset = await readFile(resolve(projectRoot, "assets", request.params.assetName));
+    return reply.header("Cache-Control", "public, max-age=3600").type(assetContentTypes[extension] ?? "application/octet-stream").send(asset);
   });
 
   app.get("/health", async () => ({
@@ -218,6 +250,20 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     return { items, nextCursor: null, hasMore: false };
   });
 
+  app.get<{ Params: RoomParams }>("/v1/rooms/:roomId/reviews", {
+    schema: {
+      params: {
+        type: "object",
+        required: ["roomId"],
+        properties: { roomId: { type: "string", minLength: 1, maxLength: 100 } },
+      },
+    },
+  }, async (request): Promise<PublicReviewPage> => {
+    const reviews = await config.repository.listRoomReviews(request.params.roomId);
+    if (!reviews) throw new ApiError(404, "ROOM_NOT_FOUND", "Помещение не найдено.");
+    return { items: reviews, nextCursor: null, hasMore: false };
+  });
+
   app.get<{ Params: RoomParams; Querystring: RoomQuery }>("/v1/rooms/:roomId", {
     schema: {
       params: {
@@ -241,6 +287,8 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       ...summary,
       description: room.description,
       rules: room.rules,
+      opensAtHour: room.opensAtHour,
+      closesAtHour: room.closesAtHour,
       bufferMinutes: room.bufferMinutes,
       services: room.services,
       availability: {

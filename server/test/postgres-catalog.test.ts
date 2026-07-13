@@ -59,6 +59,15 @@ class FakeSql implements SqlExecutor {
       closes_next_day: false,
     }];
     if (text.includes("rooms:room-blocks")) rows = [{ room_id: roomId, start_hour: 18, end_hour: 20 }];
+    if (text.includes("rooms:room-reviews")) rows = [{
+      id: "50000000-0000-4000-8000-000000000001",
+      room_id: roomId,
+      author_name: "Марина",
+      rating: 5,
+      body: "Отличная комната.",
+      partner_reply: "Спасибо!",
+      published_at: new Date("2026-06-22T12:00:00.000Z"),
+    }];
     if (text.includes("rooms:find-venue") || text.includes("rooms:list-venues")) rows = [{
       id: venueId,
       slug: "kids-loft",
@@ -124,6 +133,21 @@ test("postgres repository returns a public venue and room by stable id", async (
   const room = await repository.findRoom("kosmos", "2026-07-18");
   assert.equal(room?.id, roomId);
   assert.equal(room?.rating, 4.9);
+});
+
+test("postgres repository returns privacy-safe published room reviews", async () => {
+  const repository = new PostgresCatalogRepository(new FakeSql());
+  const reviews = await repository.listRoomReviews("kosmos");
+  assert.equal(reviews?.length, 1);
+  assert.deepEqual(reviews?.[0], {
+    id: "50000000-0000-4000-8000-000000000001",
+    roomId,
+    authorName: "Марина",
+    rating: 5,
+    body: "Отличная комната.",
+    partnerReply: "Спасибо!",
+    publishedAt: "2026-06-22T12:00:00.000Z",
+  });
 });
 
 test("storage keeps the memory repository when DATABASE_URL is absent", async () => {

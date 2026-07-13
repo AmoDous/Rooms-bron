@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Pool, type PoolClient } from "pg";
-import { demoRooms, demoVenues } from "../src/catalog.js";
+import { demoReviews, demoRooms, demoVenues } from "../src/catalog.js";
 import { postgresPoolConfig } from "../src/storage.js";
 
 if (process.env.ALLOW_DEMO_SEED !== "true") {
@@ -69,14 +69,76 @@ async function seedRoom(client: PoolClient, room: (typeof demoRooms)[number]): P
   }
 }
 
+async function seedReview(client: PoolClient, review: (typeof demoReviews)[number], index: number): Promise<void> {
+  const room = demoRooms.find((item) => item.id === review.roomId);
+  if (!room) throw new Error(`Demo review ${review.id} references an unknown room.`);
+  const venue = demoVenues.find((item) => item.id === room.venueId);
+  if (!venue) throw new Error(`Demo room ${room.id} references an unknown venue.`);
+  const suffix = String(index + 1).padStart(12, "0");
+  const userId = `40000000-0000-4000-8000-${suffix}`;
+  const bookingId = `60000000-0000-4000-8000-${suffix}`;
+  const publishedAt = new Date(review.publishedAt);
+  const startsAt = new Date(publishedAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+  startsAt.setUTCHours(12, 0, 0, 0);
+  const endsAt = new Date(startsAt.getTime() + room.minimumHours * 60 * 60 * 1000);
+  const total = room.pricePerHour * room.minimumHours;
+  const prepayment = Math.ceil(total * 0.3);
+  const commission = Math.ceil(total * 0.15);
+  const phone = `+7 999 000 00 ${String(index + 1).padStart(2, "0")}`;
+
+  await client.query(`
+    insert into users (id, role, name, phone, city, phone_verified_at)
+    values ($1, 'client', $2, $3, $4, $5)
+    on conflict (id) do update set name = excluded.name, city = excluded.city, updated_at = now()
+  `, [userId, `${review.authorName} Демо`, phone, venue.city, startsAt]);
+  await client.query(`
+    insert into bookings (
+      id, public_number, client_id, venue_id, status, client_name, client_phone, city,
+      event_type, event_name, guests, starts_at, ends_at, room_total, service_total,
+      total, prepayment, commission, partner_amount, remaining_on_site,
+      on_site_payment_method, completed_at
+    ) values ($1,$2,$3,$4,'completed',$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$13,$14,$15,$16,$17,'card',$12)
+    on conflict (id) do update set
+      client_id = excluded.client_id, venue_id = excluded.venue_id, status = 'completed',
+      client_name = excluded.client_name, client_phone = excluded.client_phone, city = excluded.city,
+      event_type = excluded.event_type, event_name = excluded.event_name, guests = excluded.guests,
+      starts_at = excluded.starts_at, ends_at = excluded.ends_at, room_total = excluded.room_total,
+      total = excluded.total, prepayment = excluded.prepayment, commission = excluded.commission,
+      partner_amount = excluded.partner_amount, remaining_on_site = excluded.remaining_on_site,
+      completed_at = excluded.completed_at, updated_at = now()
+  `, [
+    bookingId, `DEMO-${String(index + 1).padStart(4, "0")}`, userId, venue.id, review.authorName,
+    phone, venue.city, room.type, "Демо-посещение", Math.min(room.capacityMax, 8), startsAt, endsAt,
+    total, prepayment, commission, total - commission, total - prepayment,
+  ]);
+  await client.query(`
+    insert into booking_rooms (booking_id, room_id, title_snapshot, price_per_hour_snapshot, amount, is_primary)
+    values ($1,$2,$3,$4,$5,true)
+    on conflict (booking_id, room_id) do update set
+      title_snapshot = excluded.title_snapshot,
+      price_per_hour_snapshot = excluded.price_per_hour_snapshot,
+      amount = excluded.amount,
+      is_primary = true
+  `, [bookingId, room.id, room.title, room.pricePerHour, total]);
+  await client.query(`
+    insert into reviews (id, booking_id, room_id, client_id, rating, body, status, partner_reply, published_at, created_at)
+    values ($1,$2,$3,$4,$5,$6,'approved',$7,$8,$8)
+    on conflict (id) do update set
+      booking_id = excluded.booking_id, room_id = excluded.room_id, client_id = excluded.client_id,
+      rating = excluded.rating, body = excluded.body, status = 'approved',
+      partner_reply = excluded.partner_reply, published_at = excluded.published_at
+  `, [review.id, bookingId, room.id, userId, review.rating, review.body, review.partnerReply, publishedAt]);
+}
+
 const pool = new Pool({ ...postgresPoolConfig(), max: 1, application_name: "rooms-seed" });
 const client = await pool.connect();
 try {
   await client.query("begin");
   for (const venue of demoVenues) await seedVenue(client, venue);
   for (const room of demoRooms) await seedRoom(client, room);
+  for (const [index, review] of demoReviews.entries()) await seedReview(client, review, index);
   await client.query("commit");
-  console.log(`Seeded ${demoVenues.length} venues and ${demoRooms.length} rooms.`);
+  console.log(`Seeded ${demoVenues.length} venues, ${demoRooms.length} rooms and ${demoReviews.length} reviews.`);
 } catch (error) {
   await client.query("rollback");
   throw error;

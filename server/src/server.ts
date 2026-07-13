@@ -5,7 +5,7 @@ import { createCatalogStorage } from "./storage.js";
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const port = Number(process.env.PORT || 3000);
 const publicSiteUrl = process.env.PUBLIC_SITE_URL?.trim() || "https://amodous.github.io/Rooms-bron";
-const corsOrigins = String(process.env.CORS_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000,https://amodous.github.io")
+const corsOrigins = String(process.env.CORS_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000,http://localhost:4173,http://127.0.0.1:4173,https://amodous.github.io")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);

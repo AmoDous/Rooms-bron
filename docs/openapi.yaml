@@ -113,6 +113,22 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/rooms/{roomId}/reviews:
+    get:
+      tags: [Public]
+      operationId: listRoomReviews
+      parameters:
+        - $ref: '#/components/parameters/RoomId'
+      responses:
+        '200':
+          description: Approved reviews for a published room with privacy-safe author names
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicReviewPage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/availability/search:
     post:
       tags: [Public]
@@ -711,6 +727,8 @@ components:
           properties:
             description: {type: string}
             rules: {type: string}
+            opensAtHour: {type: number, minimum: 0, maximum: 47.5, multipleOf: 0.5}
+            closesAtHour: {type: number, minimum: 0, maximum: 48, multipleOf: 0.5}
             bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
             services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
             availability: {$ref: '#/components/schemas/AvailabilityResponse'}
@@ -747,6 +765,26 @@ components:
         items: {type: array, items: {$ref: '#/components/schemas/RoomSummary'}}
         nextCursor: {type: [string, 'null']}
         hasMore: {type: boolean}
+
+    PublicReview:
+      type: object
+      required: [id, roomId, authorName, rating, publishedAt]
+      properties:
+        id: {type: string, format: uuid}
+        roomId: {type: string, format: uuid}
+        authorName: {type: string, description: First name or a generic privacy-safe label}
+        rating: {type: integer, minimum: 1, maximum: 5}
+        body: {type: [string, 'null']}
+        partnerReply: {type: [string, 'null']}
+        publishedAt: {type: string, format: date-time}
+
+    PublicReviewPage:
+      type: object
+      required: [items, hasMore]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/PublicReview'}}
+        nextCursor: {type: [string, 'null']}
+        hasMore: {type: boolean, const: false}
 
     AvailabilityRequest:
       type: object

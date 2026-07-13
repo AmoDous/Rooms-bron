@@ -1081,6 +1081,39 @@
       {room:"voice-vip",name:"Ольга",rating:4,date:"май 2026",text:"Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось."},
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
+    const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname);
+    const apiState={base:apiQuery==="local"||localPreview?"http://127.0.0.1:3000":"",connected:false,storage:"",reviews:new Map()};
+    async function apiJson(path){
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3500);
+      try{const response=await fetch(`${apiState.base}${path}`,{headers:{Accept:"application/json"},signal:controller.signal});if(!response.ok)throw new Error(`Rooms API ${response.status}`);return response.json()}
+      finally{clearTimeout(timer)}
+    }
+    function mergeApiVenue(data,cover){
+      let item=venues.find(v=>v.id===data.slug);
+      const patch={apiId:data.id,city:data.city,title:data.title,address:data.address,image:cover||item?.image||img("lounge-room"),about:data.description||item?.about||"",rules:data.rules||item?.rules||"",amenities:Array.isArray(data.amenities)?data.amenities:item?.amenities||[],paymentMethods:Array.isArray(data.paymentMethods)?data.paymentMethods:item?.paymentMethods||["card","cash"],publicationStatus:data.publicationStatus||"published",verificationStatus:"verified",partnerMode:data.partnerMode||"catalog",cabinetStatus:"active"};
+      if(item)Object.assign(item,patch);else{item={id:data.slug,...patch};venues.push(item)}
+      return item;
+    }
+    function mergeApiRoom(summary,detail){
+      const existing=rooms.find(r=>r.id===summary.slug),v=mergeApiVenue(summary.venue,summary.photos?.[0]),source=detail||summary;
+      const patch={apiId:summary.id,venue:v.id,type:summary.type,title:summary.title,subtitle:summary.subtitle||"",capacity:Number(summary.capacityMax)||1,price:Number(summary.pricePerHour)||0,min:Number(summary.minimumHours)||1,rating:Number(summary.rating)||0,reviews:Number(summary.reviewCount)||0,features:Array.isArray(summary.features)?summary.features:[],tags:Array.isArray(summary.tags)?summary.tags:[],promo:summary.promotion||"",images:Array.isArray(summary.photos)&&summary.photos.length?summary.photos:existing?.images||[v.image],desc:source.description??existing?.desc??"",rules:source.rules??existing?.rules??"",services:Array.isArray(source.services)?source.services.map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})):existing?.services||[],work:Number.isFinite(source.opensAtHour)&&Number.isFinite(source.closesAtHour)?[Number(source.opensAtHour),Number(source.closesAtHour)]:existing?.work||[10,24],bufferEnabled:Number(source.bufferMinutes)>0,buffer:Number(source.bufferMinutes)||0,status:"published"};
+      if(existing)Object.assign(existing,patch);else rooms.push({id:summary.slug,...patch,blocked:{default:[]}});
+    }
+    function apiReviewItems(){return [...apiState.reviews.values()].flat()}
+    async function connectPublicApi(){
+      if(!apiState.base)return;
+      document.documentElement.dataset.api="connecting";
+      try{
+        const health=await apiJson("/health"),apiCities=await apiJson("/v1/cities");
+        const pages=await Promise.all(apiCities.filter(city=>city.active).map(city=>apiJson(`/v1/rooms?city=${encodeURIComponent(city.name)}`)));
+        const summaries=pages.flatMap(page=>page.items||[]),details=await Promise.all(summaries.map(room=>apiJson(`/v1/rooms/${encodeURIComponent(room.slug)}?date=${state.date}`).catch(()=>null)));
+        summaries.forEach((room,index)=>mergeApiRoom(room,details[index]));
+        const reviewPages=await Promise.all(summaries.map(room=>apiJson(`/v1/rooms/${encodeURIComponent(room.slug)}/reviews`).catch(()=>({items:[]}))));
+        summaries.forEach((room,index)=>apiState.reviews.set(room.slug,(reviewPages[index]?.items||[]).map(review=>({id:`API-${review.id}`,room:room.slug,name:review.authorName,rating:Number(review.rating)||0,date:new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(new Date(review.publishedAt)),text:review.body||"",reply:review.partnerReply||"",status:"published",seed:true,server:true}))));
+        apiState.connected=true;apiState.storage=health.storage||"unknown";document.documentElement.dataset.api="connected";hydrate();
+        console.info(`Rooms: каталог подключён к API (${apiState.storage}).`);
+      }catch(error){document.documentElement.dataset.api="fallback";console.info("Rooms: API недоступен, используется встроенный каталог.",error)}
+    }
     const E={cityButton:$("cityButton"),heroCityLabel:$("heroCityLabel"),noticeButton:$("noticeButton"),noticeBadge:$("noticeBadge"),accountButton:$("accountButton"),searchForm:$("searchForm"),searchCity:$("searchCity"),spaceType:$("spaceType"),date:$("date"),dateDisplay:$("dateDisplay"),time:$("time"),hours:$("hours"),guests:$("guests"),age:$("ageMode"),maxPrice:$("maxPrice"),chips:$("chips"),advancedToggle:$("advancedToggle"),advancedRow:$("advancedRow"),results:$("results"),catalogMap:$("catalogMap"),empty:$("empty"),count:$("countText"),intro:$("resultIntro"),sort:$("sortMode"),showAll:$("showAll"),resetButton:$("resetButton"),scenarioGrid:$("scenarioGrid"),partnerForm:$("partnerForm"),partnerStatus:$("partnerStatus"),partnerEntry:$("partnerEntry"),modal:$("modal"),modalBox:$("modalBox"),modalContent:$("modalContent"),modalClose:$("modalClose"),toast:$("toast"),partnerAlert:$("partnerAlert")};
     let state={city:"Воронеж",type:"any",date:today,time:"",hours:3,guests:8,age:"any",maxPrice:0,features:[]},last=[],lastGroups=[],catalogView="list",catalogMapVenueId="",profileBookingFilter="active",partnerBookingFilter="new",adminBookingFilter="new",partnerBookingDateFilter="all",partnerBookingEventFilter="all",adminBookingDateFilter="all",adminBookingEventFilter="all",adminManualBookingFilter="active",adminManualDateFilter="upcoming",adminStatsPeriod="month",adminStatsFrom=`${today.slice(0,8)}01`,adminStatsTo=today,detailServiceSelection={},detailRoomSelection={},pendingMigrationSnapshot=null;
     let legalReturn=null;
@@ -1883,7 +1916,7 @@
       });
     }
     function customReviews(){return read(store.reviews,[])}
-    function seedReviewItems(){return seedReviews.map((x,i)=>({...x,id:x.id||`S-${x.room}-${i}`,status:"published",seed:true}))}
+    function seedReviewItems(){const source=apiState.connected?apiReviewItems():seedReviews;return source.map((x,i)=>({...x,id:x.id||`S-${x.room}-${i}`,status:"published",seed:true}))}
     function reviewStatus(x){return x.status||"published"}
     function reviewStatusLabel(s){return ({pending:"на модерации",published:"опубликован",rejected:"отклонён"})[s]||"опубликован"}
     function reviewStatusClass(s){return s==="published"?"paid":s==="rejected"?"cancelled":"review"}
@@ -4074,6 +4107,7 @@
     document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!E.modal.classList.contains("workspace"))requestCloseModal();if(E.modal.classList.contains("open")&&(e.key==="ArrowLeft"||e.key==="ArrowRight")&&!e.target.matches("input,select,textarea")){const wrap=galleryWrap();if(wrap){e.preventDefault();moveGallery(wrap,e.key==="ArrowRight"?1:-1);return}}if((e.key==="Enter"||e.key===" ")&&e.target.matches("[data-open-venue]")){e.preventDefault();renderSpace(e.target.dataset.openVenue)}});
     window.addEventListener("popstate",()=>{if(location.hash===partnerRoute)openPartner();else if(E.modal.classList.contains("workspace"))closeModal()});
     hydrate();
+    void connectPublicApi();
     if(location.hash===partnerRoute)openPartner();
   </script>
 </body>

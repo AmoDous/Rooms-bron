@@ -25,6 +25,17 @@ test("health reports the active repository", async () => {
   assert.deepEqual(response.json().database, "down");
 });
 
+test("local preview serves the current site and its room photography", async () => {
+  const page = await app.inject({ method: "GET", url: "/" });
+  assert.equal(page.statusCode, 200);
+  assert.match(page.headers["content-type"] ?? "", /text\/html/);
+  assert.match(page.body, /Rooms/);
+  const photo = await app.inject({ method: "GET", url: "/assets/kids-loft.jpg" });
+  assert.equal(photo.statusCode, 200);
+  assert.match(photo.headers["content-type"] ?? "", /image\/jpeg/);
+  assert.ok(photo.rawPayload.length > 1000);
+});
+
 test("cities include pilot Voronezh and Moscow", async () => {
   const response = await app.inject({ method: "GET", url: "/v1/cities" });
   assert.equal(response.statusCode, 200);
@@ -128,6 +139,25 @@ test("room detail accepts a legacy slug and exposes services and windows", async
 
 test("room detail returns a stable not-found error", async () => {
   const response = await app.inject({ method: "GET", url: "/v1/rooms/unknown-room" });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.json().code, "ROOM_NOT_FOUND");
+});
+
+test("room reviews expose approved public feedback without client contacts", async () => {
+  const response = await app.inject({ method: "GET", url: "/v1/rooms/kosmos/reviews" });
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.equal(payload.items.length, 2);
+  assert.equal(payload.items[0].authorName, "Марина");
+  assert.equal(payload.items[0].rating, 5);
+  assert.equal(payload.hasMore, false);
+  assert.equal("phone" in payload.items[0], false);
+  assert.equal("email" in payload.items[0], false);
+  assert.equal("clientId" in payload.items[0], false);
+});
+
+test("room reviews keep unknown rooms indistinguishable from private supply", async () => {
+  const response = await app.inject({ method: "GET", url: "/v1/rooms/unknown-room/reviews" });
   assert.equal(response.statusCode, 404);
   assert.equal(response.json().code, "ROOM_NOT_FOUND");
 });

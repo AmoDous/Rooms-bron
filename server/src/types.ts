@@ -109,6 +109,8 @@ export interface PublicRoomSummary {
 export interface PublicRoomDetail extends PublicRoomSummary {
   description: string;
   rules: string;
+  opensAtHour: number;
+  closesAtHour: number;
   bufferMinutes: number;
   services: RoomService[];
   availability: {
@@ -116,4 +118,20 @@ export interface PublicRoomDetail extends PublicRoomSummary {
     timezone: string;
     windows: AvailabilityWindow[];
   };
+}
+
+export interface PublicReview {
+  id: string;
+  roomId: string;
+  authorName: string;
+  rating: number;
+  body: string | null;
+  partnerReply: string | null;
+  publishedAt: string;
+}
+
+export interface PublicReviewPage {
+  items: PublicReview[];
+  nextCursor: null;
+  hasMore: false;
 }

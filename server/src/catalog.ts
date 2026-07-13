@@ -1,4 +1,4 @@
-import type { City, CityStats, Room, RoomSearchFilters, Venue } from "./types.js";
+import type { City, CityStats, PublicReview, Room, RoomSearchFilters, Venue } from "./types.js";
 
 export const venueIds = {
   kidsLoft: "10000000-0000-4000-8000-000000000001",
@@ -249,6 +249,54 @@ export const demoRooms: Room[] = [
   },
 ];
 
+export const demoReviews: PublicReview[] = [
+  {
+    id: "50000000-0000-4000-8000-000000000001",
+    roomId: roomIds.kosmos,
+    authorName: "Марина",
+    rating: 5,
+    body: "Праздновали день рождения сына. Комната отдельная, родителям было где спокойно посидеть, а детям хватило места для игр.",
+    partnerReply: "Марина, спасибо! Будем рады снова видеть вашу семью.",
+    publishedAt: "2026-06-22T12:00:00.000Z",
+  },
+  {
+    id: "50000000-0000-4000-8000-000000000002",
+    roomId: roomIds.kosmos,
+    authorName: "Андрей",
+    rating: 5,
+    body: "Удобно, что можно было принести торт и заранее согласовать украшения. После заявки менеджер быстро перезвонил.",
+    partnerReply: null,
+    publishedAt: "2026-05-18T12:00:00.000Z",
+  },
+  {
+    id: "50000000-0000-4000-8000-000000000003",
+    roomId: roomIds.voiceSmall,
+    authorName: "Кирилл",
+    rating: 5,
+    body: "Комната закрытая, звук хороший, никто не мешал. Для компании на вечер формат именно то, что нужно.",
+    partnerReply: null,
+    publishedAt: "2026-06-15T12:00:00.000Z",
+  },
+  {
+    id: "50000000-0000-4000-8000-000000000004",
+    roomId: roomIds.voiceVip,
+    authorName: "Ольга",
+    rating: 4,
+    body: "Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось.",
+    partnerReply: "Спасибо за обратную связь. Добавили дополнительный свет возле стола.",
+    publishedAt: "2026-05-09T12:00:00.000Z",
+  },
+  {
+    id: "50000000-0000-4000-8000-000000000005",
+    roomId: roomIds.terraceHall,
+    authorName: "Екатерина",
+    rating: 5,
+    body: "Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и общению с площадкой.",
+    partnerReply: null,
+    publishedAt: "2026-06-03T12:00:00.000Z",
+  },
+];
+
 export interface CatalogRepository {
   readonly storage: "memory" | "postgresql";
   listCities(): Promise<City[]>;
@@ -256,6 +304,7 @@ export interface CatalogRepository {
   listVenues(): Promise<Venue[]>;
   searchRooms(filters: RoomSearchFilters): Promise<Room[]>;
   findRoom(idOrSlug: string, date?: string): Promise<Room | null>;
+  listRoomReviews(idOrSlug: string): Promise<PublicReview[] | null>;
   findVenue(id: string): Promise<Venue | null>;
 }
 
@@ -330,6 +379,12 @@ export class MemoryCatalogRepository implements CatalogRepository {
   async findRoom(idOrSlug: string, _date?: string): Promise<Room | null> {
     const room = demoRooms.find((item) => item.id === idOrSlug || item.slug === idOrSlug);
     return room?.publicationStatus === "published" ? structuredClone(room) : null;
+  }
+
+  async listRoomReviews(idOrSlug: string): Promise<PublicReview[] | null> {
+    const room = demoRooms.find((item) => item.id === idOrSlug || item.slug === idOrSlug);
+    if (!room || room.publicationStatus !== "published") return null;
+    return structuredClone(demoReviews.filter((review) => review.roomId === room.id));
   }
 
   async findVenue(id: string): Promise<Venue | null> {

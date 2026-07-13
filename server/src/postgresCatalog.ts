@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
 import type { CatalogRepository } from "./catalog.js";
-import type { City, CityStats, HourInterval, PaymentMethod, PublicationStatus, Room, RoomSearchFilters, RoomService, Venue } from "./types.js";
+import type { City, CityStats, HourInterval, PaymentMethod, PublicReview, PublicationStatus, Room, RoomSearchFilters, RoomService, Venue } from "./types.js";
 
 export interface SqlExecutor {
   query<Row extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<{ rows: Row[] }>;
@@ -72,12 +72,22 @@ interface BlockRow extends QueryResultRow {
   end_hour: number | string;
 }
 
+interface ReviewRow extends QueryResultRow {
+  id: string | null;
+  room_id: string;
+  author_name: string | null;
+  rating: number | string | null;
+  body: string | null;
+  partner_reply: string | null;
+  published_at: Date | string | null;
+}
+
 const ROOM_SELECT = `
   select
     r.id::text, r.slug, r.venue_id::text, r.title, r.subtitle, r.room_type,
     r.capacity_min, r.capacity_max, r.price_per_hour::float8, r.minimum_hours::float8,
-    coalesce(review_metrics.rating, r.rating_cached)::float8 as rating,
-    case when coalesce(review_metrics.review_count, 0) > 0 then review_metrics.review_count else r.review_count_cached end as review_count,
+    case when r.review_count_cached > 0 then r.rating_cached else coalesce(review_metrics.rating, 0) end::float8 as rating,
+    case when r.review_count_cached > 0 then r.review_count_cached else coalesce(review_metrics.review_count, 0) end as review_count,
     r.description, r.rules, r.promotion, r.features, r.tags,
     r.opens_at::text, r.closes_at::text, r.closes_next_day, r.buffer_minutes,
     r.status as publication_status
@@ -241,6 +251,43 @@ export class PostgresCatalogRepository implements CatalogRepository {
     `, [idOrSlug]);
     if (!result.rows.length) return null;
     return (await this.hydrateRooms(result.rows, date))[0] ?? null;
+  }
+
+  async listRoomReviews(idOrSlug: string): Promise<PublicReview[] | null> {
+    const result = await this.sql.query<ReviewRow>(`/* rooms:room-reviews */
+      with target_room as (
+        select r.id
+        from rooms r
+        join venues v on v.id = r.venue_id
+        where (r.id::text = $1 or r.slug = $1)
+          and r.status = 'published'
+          and v.publication_status = 'published'
+          and v.verification_status = 'verified'
+          and v.cabinet_status = 'active'
+          and v.partner_mode = 'catalog'
+        limit 1
+      )
+      select rv.id::text, target_room.id::text as room_id,
+        coalesce(nullif(split_part(trim(u.name), ' ', 1), ''), 'Гость Rooms') as author_name,
+        rv.rating, rv.body, rv.partner_reply, rv.published_at
+      from target_room
+      left join reviews rv
+        on rv.room_id = target_room.id
+        and rv.status = 'approved'
+        and rv.published_at is not null
+      left join users u on u.id = rv.client_id
+      order by rv.published_at desc nulls last, rv.created_at desc nulls last
+    `, [idOrSlug]);
+    if (!result.rows.length) return null;
+    return result.rows.filter((row) => row.id !== null).map((row) => ({
+      id: row.id!,
+      roomId: row.room_id,
+      authorName: row.author_name ?? "Гость Rooms",
+      rating: numeric(row.rating),
+      body: row.body,
+      partnerReply: row.partner_reply,
+      publishedAt: row.published_at instanceof Date ? row.published_at.toISOString() : String(row.published_at),
+    }));
   }
 
   async findVenue(id: string): Promise<Venue | null> {
