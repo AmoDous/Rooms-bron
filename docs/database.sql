@@ -62,6 +62,7 @@ create table venues (
   contact_name text,
   contact_phone text,
   contact_email citext,
+  amenities text[] not null default '{}',
   payment_methods text[] not null default array['card','cash']::text[],
   publication_status venue_status not null default 'review',
   verification_status verification_status not null default 'review',
@@ -106,6 +107,11 @@ create table rooms (
   capacity_max integer not null,
   price_per_hour numeric(12,2) not null,
   minimum_hours numeric(4,2) not null default 1,
+  rating_cached numeric(2,1) not null default 0,
+  review_count_cached integer not null default 0,
+  opens_at time not null default '10:00',
+  closes_at time not null default '00:00',
+  closes_next_day boolean not null default true,
   buffer_minutes integer not null default 0,
   features text[] not null default '{}',
   tags text[] not null default '{}',
@@ -116,6 +122,7 @@ create table rooms (
   constraint rooms_capacity check (capacity_min > 0 and capacity_max >= capacity_min),
   constraint rooms_price check (price_per_hour >= 0),
   constraint rooms_minimum check (minimum_hours >= 0.5),
+  constraint rooms_rating check (rating_cached between 0 and 5 and review_count_cached >= 0),
   constraint rooms_buffer check (buffer_minutes in (0, 15, 30, 45, 60))
 );
 

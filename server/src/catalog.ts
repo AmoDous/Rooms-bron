@@ -16,7 +16,7 @@ export const roomIds = {
   myboxRoom: "20000000-0000-4000-8000-000000000006",
 } as const;
 
-const venues: Venue[] = [
+export const demoVenues: Venue[] = [
   {
     id: venueIds.kidsLoft,
     slug: "kids-loft",
@@ -71,7 +71,7 @@ const venues: Venue[] = [
   },
 ];
 
-const rooms: Room[] = [
+export const demoRooms: Room[] = [
   {
     id: roomIds.kosmos,
     slug: "kosmos",
@@ -255,7 +255,7 @@ export interface CatalogRepository {
   getCityStats(idOrName: string): Promise<CityStats | null>;
   listVenues(): Promise<Venue[]>;
   searchRooms(filters: RoomSearchFilters): Promise<Room[]>;
-  findRoom(idOrSlug: string): Promise<Room | null>;
+  findRoom(idOrSlug: string, date?: string): Promise<Room | null>;
   findVenue(id: string): Promise<Venue | null>;
 }
 
@@ -274,7 +274,7 @@ export class MemoryCatalogRepository implements CatalogRepository {
   }
 
   async listCities(): Promise<City[]> {
-    const names = [...new Set(venues.filter((venue) => venue.publicationStatus === "published").map((venue) => venue.city))];
+    const names = [...new Set(demoVenues.filter((venue) => venue.publicationStatus === "published").map((venue) => venue.city))];
     return names.map((name) => ({
       id: this.cityId(name),
       name,
@@ -287,9 +287,9 @@ export class MemoryCatalogRepository implements CatalogRepository {
     const value = idOrName.trim().toLocaleLowerCase("ru-RU");
     const city = (await this.listCities()).find((item) => item.id === value || item.name.toLocaleLowerCase("ru-RU") === value);
     if (!city) return null;
-    const cityVenues = venues.filter((venue) => venue.publicationStatus === "published" && venue.city === city.name);
+    const cityVenues = demoVenues.filter((venue) => venue.publicationStatus === "published" && venue.city === city.name);
     const venueSet = new Set(cityVenues.map((venue) => venue.id));
-    const publishedRooms = rooms.filter((room) => room.publicationStatus === "published" && venueSet.has(room.venueId)).length;
+    const publishedRooms = demoRooms.filter((room) => room.publicationStatus === "published" && venueSet.has(room.venueId)).length;
     const activeClients = Math.max(0, Number(this.activeClientsByCity[city.name] ?? this.activeClientsByCity[city.id] ?? 0));
     const activeClientsLabel = this.audienceLabel(activeClients);
     return {
@@ -303,16 +303,16 @@ export class MemoryCatalogRepository implements CatalogRepository {
   }
 
   async listVenues(): Promise<Venue[]> {
-    return structuredClone(venues.filter((venue) => venue.publicationStatus === "published"));
+    return structuredClone(demoVenues.filter((venue) => venue.publicationStatus === "published"));
   }
 
   async searchRooms(filters: RoomSearchFilters): Promise<Room[]> {
     const cityVenueIds = new Set(
-      venues
+      demoVenues
         .filter((venue) => venue.publicationStatus === "published" && venue.city === filters.city)
         .map((venue) => venue.id),
     );
-    const found = rooms.filter((room) => {
+    const found = demoRooms.filter((room) => {
       if (room.publicationStatus !== "published" || !cityVenueIds.has(room.venueId)) return false;
       if (filters.guests && room.capacityMax < filters.guests) return false;
       if (filters.type && filters.type !== "any" && room.type !== filters.type) return false;
@@ -327,13 +327,13 @@ export class MemoryCatalogRepository implements CatalogRepository {
     return structuredClone(found.sort(sorters[filters.sort]));
   }
 
-  async findRoom(idOrSlug: string): Promise<Room | null> {
-    const room = rooms.find((item) => item.id === idOrSlug || item.slug === idOrSlug);
+  async findRoom(idOrSlug: string, _date?: string): Promise<Room | null> {
+    const room = demoRooms.find((item) => item.id === idOrSlug || item.slug === idOrSlug);
     return room?.publicationStatus === "published" ? structuredClone(room) : null;
   }
 
   async findVenue(id: string): Promise<Venue | null> {
-    const venue = venues.find((item) => item.id === id);
+    const venue = demoVenues.find((item) => item.id === id);
     return venue?.publicationStatus === "published" ? structuredClone(venue) : null;
   }
 }

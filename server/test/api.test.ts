@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { availabilityForRoom } from "../src/availability.js";
 import { MemoryCatalogRepository, roomIds } from "../src/catalog.js";
+import type { Room } from "../src/types.js";
 
 let app: FastifyInstance;
 
@@ -166,6 +168,40 @@ test("availability rejects unknown rooms and over-capacity groups", async () => 
   });
   assert.equal(capacity.statusCode, 200);
   assert.deepEqual(capacity.json().windows, []);
+});
+
+test("availability rolls after-midnight windows into the next calendar day", () => {
+  const nightRoom: Room = {
+    id: roomIds.voiceVip,
+    slug: "night-room",
+    venueId: "10000000-0000-4000-8000-000000000002",
+    title: "Ночная комната",
+    subtitle: "",
+    type: "lounge",
+    capacityMin: 1,
+    capacityMax: 12,
+    pricePerHour: 2600,
+    minimumHours: 1,
+    rating: 4.8,
+    reviewCount: 1,
+    description: "",
+    rules: "",
+    promotion: null,
+    features: [],
+    tags: [],
+    photoPaths: [],
+    services: [],
+    opensAtHour: 22,
+    closesAtHour: 26,
+    bufferMinutes: 0,
+    defaultBlocked: [],
+    blockedByDate: {},
+    publicationStatus: "published",
+  };
+  const windows = availabilityForRoom(nightRoom, "2026-07-18", 60, "01:00");
+  const preferred = windows.find((window) => window.exactMatch);
+  assert.equal(preferred?.startsAt, "2026-07-19T01:00:00+03:00");
+  assert.ok(windows.every((window) => !window.startsAt.includes("T24:") && !window.startsAt.includes("T25:")));
 });
 
 test("CORS allows the published Rooms origin", async () => {

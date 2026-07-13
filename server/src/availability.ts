@@ -20,13 +20,16 @@ export function moscowToday(now = new Date()): string {
 }
 
 function clockFromMinutes(totalMinutes: number): string {
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
+  const minutesInDay = ((totalMinutes % 1440) + 1440) % 1440;
+  const hours = Math.floor(minutesInDay / 60);
+  const minutes = minutesInDay % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function startsAt(date: string, minutes: number): string {
-  return `${date}T${clockFromMinutes(minutes)}:00+03:00`;
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + Math.floor(minutes / 1440));
+  return `${day.toISOString().slice(0, 10)}T${clockFromMinutes(minutes)}:00+03:00`;
 }
 
 function minuteOfDay(time: string | undefined): number | null {
@@ -65,7 +68,10 @@ export function availabilityForRoom(
 ): AvailabilityWindow[] {
   const opens = room.opensAtHour * 60;
   const closes = room.closesAtHour * 60;
-  const preferred = minuteOfDay(preferredTime);
+  const preferredTimeMinutes = minuteOfDay(preferredTime);
+  const preferred = preferredTimeMinutes !== null && preferredTimeMinutes < opens
+    ? preferredTimeMinutes + 1440
+    : preferredTimeMinutes;
   const blocks = roomBlocks(room, date);
   const windows: AvailabilityWindow[] = [];
 

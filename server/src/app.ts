@@ -232,10 +232,10 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       },
     },
   }, async (request): Promise<PublicRoomDetail> => {
-    const room = await config.repository.findRoom(request.params.roomId);
-    if (!room) throw new ApiError(404, "ROOM_NOT_FOUND", "Помещение не найдено.");
     const date = request.query.date ?? moscowToday();
     if (!isIsoDate(date)) throw new ApiError(400, "INVALID_DATE", "Дата должна существовать и иметь формат YYYY-MM-DD.");
+    const room = await config.repository.findRoom(request.params.roomId, date);
+    if (!room) throw new ApiError(404, "ROOM_NOT_FOUND", "Помещение не найдено.");
     const summary = await presentRoom(config.repository, room, config.publicSiteUrl, date);
     return {
       ...summary,
@@ -269,7 +269,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   }, async (request) => {
     const body = request.body;
     if (!isIsoDate(body.date)) throw new ApiError(400, "INVALID_DATE", "Дата должна существовать и иметь формат YYYY-MM-DD.");
-    const found = await Promise.all(body.roomIds.map((id) => config.repository.findRoom(id)));
+    const found = await Promise.all(body.roomIds.map((id) => config.repository.findRoom(id, body.date)));
     const missing = body.roomIds.filter((_, index) => !found[index]);
     if (missing.length) throw new ApiError(404, "ROOM_NOT_FOUND", "Одно или несколько помещений не найдены.", missing);
     const rooms = found.filter((room): room is Room => room !== null);
