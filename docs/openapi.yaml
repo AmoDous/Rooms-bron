@@ -1,0 +1,882 @@
+openapi: 3.1.0
+info:
+  title: Rooms API
+  version: 0.1.0
+  description: |
+    Draft contract for the Rooms MVP backend. The current GitHub Pages build is
+    still a frontend prototype and does not serve these endpoints.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.rooms.example
+    description: Production placeholder
+tags:
+  - name: Public
+  - name: Auth
+  - name: Client
+  - name: Partner
+  - name: Admin
+  - name: Payments
+
+paths:
+  /health:
+    get:
+      tags: [Public]
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, database, time]
+                properties:
+                  status: {type: string, const: ok}
+                  database: {type: string, enum: [up, down]}
+                  time: {type: string, format: date-time}
+
+  /v1/cities:
+    get:
+      tags: [Public]
+      operationId: listCities
+      responses:
+        '200':
+          description: Supported cities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/City'
+
+  /v1/rooms:
+    get:
+      tags: [Public]
+      operationId: searchRooms
+      parameters:
+        - {name: city, in: query, required: true, schema: {type: string}}
+        - {name: date, in: query, schema: {type: string, format: date}}
+        - {name: time, in: query, schema: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}}
+        - {name: durationMinutes, in: query, schema: {type: integer, minimum: 30, multipleOf: 30}}
+        - {name: guests, in: query, schema: {type: integer, minimum: 1}}
+        - {name: type, in: query, schema: {type: string}}
+        - {name: features, in: query, schema: {type: array, items: {type: string}}, style: form, explode: false}
+        - {name: maxPricePerHour, in: query, schema: {type: number, minimum: 0}}
+        - {name: sort, in: query, schema: {type: string, enum: [rating, price, capacity], default: rating}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Published rooms and optional availability summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomSearchResult'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/rooms/{roomId}:
+    get:
+      tags: [Public]
+      operationId: getRoom
+      parameters:
+        - $ref: '#/components/parameters/RoomId'
+        - {name: date, in: query, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: Room detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/availability/search:
+    post:
+      tags: [Public]
+      operationId: searchAvailability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailabilityRequest'
+      responses:
+        '200':
+          description: Free starts and maximum duration for each start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/auth/client/register:
+    post:
+      tags: [Auth]
+      operationId: registerClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRegistration'
+      responses:
+        '201':
+          description: Client account and session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: {type: string}
+                password: {type: string, minLength: 8}
+      responses:
+        '200':
+          description: Authenticated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      security:
+        - bearerAuth: []
+      responses:
+        '204': {description: Session revoked}
+
+  /v1/me:
+    get:
+      tags: [Client]
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/me/notification-settings:
+    get:
+      tags: [Client]
+      operationId: getNotificationSettings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notification channels
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+    patch:
+      tags: [Client]
+      operationId: updateNotificationSettings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettings'
+      responses:
+        '200':
+          description: Updated channels
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+
+  /v1/bookings:
+    get:
+      tags: [Client]
+      operationId: listClientBookings
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: statusGroup, in: query, schema: {type: string, enum: [active, completed, cancelled, all]}}
+      responses:
+        '200':
+          description: Client bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Booking'
+    post:
+      tags: [Client]
+      operationId: createBooking
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCreate'
+      responses:
+        '201':
+          description: New request. The slot is not blocked yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          $ref: '#/components/responses/SlotConflict'
+
+  /v1/bookings/{bookingId}:
+    get:
+      tags: [Client]
+      operationId: getBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Booking visible to the current role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/bookings/{bookingId}/cancel:
+    post:
+      tags: [Client]
+      operationId: cancelBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 3, maxLength: 1000}
+      responses:
+        '200':
+          description: Cancelled booking or refund review created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+
+  /v1/bookings/{bookingId}/messages:
+    get:
+      tags: [Client, Partner]
+      operationId: listBookingMessages
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Visible booking messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookingMessage'
+    post:
+      tags: [Client, Partner]
+      operationId: createBookingMessage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: {type: string, minLength: 1, maxLength: 1000}
+      responses:
+        '201':
+          description: Message accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingMessage'
+        '422':
+          description: Direct contact details are blocked before payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/bookings/{bookingId}/payment-intent:
+    post:
+      tags: [Payments]
+      operationId: createPaymentIntent
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '201':
+          description: Server-calculated Sber payment intent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentIntent'
+        '409':
+          $ref: '#/components/responses/SlotConflict'
+
+  /v1/payments/webhooks/sber:
+    post:
+      tags: [Payments]
+      operationId: handleSberWebhook
+      parameters:
+        - {name: X-Sber-Signature, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '204': {description: Event processed idempotently}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/partner/venue:
+    get:
+      tags: [Partner]
+      operationId: getPartnerVenue
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Venue managed by the partner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Venue'
+    patch:
+      tags: [Partner]
+      operationId: updatePartnerVenue
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Immediate fields applied and critical fields sent to moderation
+
+  /v1/partner/rooms:
+    get:
+      tags: [Partner]
+      operationId: listPartnerRooms
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Partner rooms
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoomDetail'
+    post:
+      tags: [Partner]
+      operationId: createPartnerRoom
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoomWrite'
+      responses:
+        '202':
+          description: Room draft created and sent to moderation
+
+  /v1/partner/reservations:
+    post:
+      tags: [Partner]
+      operationId: createManualReservation
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualReservation'
+      responses:
+        '201':
+          description: Manual booking or technical block created immediately
+        '409':
+          $ref: '#/components/responses/SlotConflict'
+
+  /v1/partner/bookings/{bookingId}/confirm:
+    post:
+      tags: [Partner]
+      operationId: confirmPartnerBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Slot held for 15 minutes awaiting payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          $ref: '#/components/responses/SlotConflict'
+
+  /v1/partner/bookings/{bookingId}/proposal:
+    post:
+      tags: [Partner]
+      operationId: proposeBookingTime
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeProposal'
+      responses:
+        '200':
+          description: Alternative time sent to client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+
+  /v1/admin/notification-deliveries:
+    get:
+      tags: [Admin]
+      operationId: listNotificationDeliveries
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [queued, processing, sent, failed, cancelled]}}
+        - {name: channel, in: query, schema: {type: string, enum: [email, telegram]}}
+      responses:
+        '200':
+          description: Delivery queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationDelivery'
+
+  /v1/admin/migrations/validate:
+    post:
+      tags: [Admin]
+      operationId: validateMigration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: Collection counts and validation warnings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationValidation'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Authentication failed or session expired
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Entity not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: Entity already exists
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    SlotConflict:
+      description: One or more rooms are no longer available
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                properties:
+                  alternatives:
+                    type: array
+                    items: {$ref: '#/components/schemas/AvailabilityWindow'}
+
+  schemas:
+    City:
+      type: object
+      required: [id, name, active]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        active: {type: boolean}
+        pilot: {type: boolean}
+
+    User:
+      type: object
+      required: [id, role, name]
+      properties:
+        id: {type: string, format: uuid}
+        role: {type: string, enum: [client, partner, admin, accountant]}
+        name: {type: string}
+        email: {type: [string, 'null'], format: email}
+        phone: {type: [string, 'null']}
+        city: {type: [string, 'null']}
+
+    AuthSession:
+      type: object
+      required: [user, accessToken, expiresIn]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        accessToken: {type: string}
+        expiresIn: {type: integer, description: Seconds}
+
+    ClientRegistration:
+      type: object
+      required: [name, email, phone, city, password, legal]
+      properties:
+        name: {type: string, minLength: 2}
+        email: {type: string, format: email}
+        phone: {type: string}
+        city: {type: string}
+        password: {type: string, minLength: 8}
+        legal:
+          type: object
+          required: [termsVersion, privacyVersion, acceptedAt]
+          properties:
+            termsVersion: {type: string}
+            privacyVersion: {type: string}
+            acceptedAt: {type: string, format: date-time}
+
+    Venue:
+      type: object
+      required: [id, title, city, address, publicationStatus, partnerMode]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string}
+        city: {type: string}
+        address: {type: string}
+        latitude: {type: [number, 'null']}
+        longitude: {type: [number, 'null']}
+        description: {type: [string, 'null']}
+        rules: {type: [string, 'null']}
+        publicationStatus: {type: string, enum: [review, published, hidden]}
+        partnerMode: {type: string, enum: [catalog, crm]}
+        paymentMethods: {type: array, items: {type: string, enum: [card, cash]}}
+
+    RoomSummary:
+      type: object
+      required: [id, venue, title, type, capacityMax, pricePerHour, minimumHours, photos]
+      properties:
+        id: {type: string, format: uuid}
+        venue: {$ref: '#/components/schemas/Venue'}
+        title: {type: string}
+        type: {type: string}
+        capacityMin: {type: integer, minimum: 1}
+        capacityMax: {type: integer, minimum: 1}
+        pricePerHour: {type: number, minimum: 0}
+        minimumHours: {type: number, minimum: 0.5, multipleOf: 0.5}
+        rating: {type: number, minimum: 0, maximum: 5}
+        reviewCount: {type: integer, minimum: 0}
+        features: {type: array, items: {type: string}}
+        promotion: {type: [string, 'null']}
+        photos: {type: array, items: {type: string, format: uri}}
+        nearestWindows: {type: array, items: {$ref: '#/components/schemas/AvailabilityWindow'}}
+
+    RoomDetail:
+      allOf:
+        - $ref: '#/components/schemas/RoomSummary'
+        - type: object
+          properties:
+            description: {type: string}
+            rules: {type: string}
+            bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
+            services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+            availability: {$ref: '#/components/schemas/AvailabilityResponse'}
+
+    RoomWrite:
+      type: object
+      required: [title, type, capacityMax, pricePerHour, minimumHours]
+      properties:
+        title: {type: string, minLength: 2}
+        type: {type: string}
+        description: {type: string}
+        rules: {type: string}
+        promotion: {type: string}
+        capacityMin: {type: integer, minimum: 1, default: 1}
+        capacityMax: {type: integer, minimum: 1}
+        pricePerHour: {type: number, minimum: 0}
+        minimumHours: {type: number, minimum: 0.5, multipleOf: 0.5}
+        bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
+        features: {type: array, items: {type: string}}
+
+    RoomService:
+      type: object
+      required: [id, name, price]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: [string, 'null']}
+        price: {type: number, minimum: 0}
+
+    RoomSearchResult:
+      type: object
+      required: [items, hasMore]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/RoomSummary'}}
+        nextCursor: {type: [string, 'null']}
+        hasMore: {type: boolean}
+
+    AvailabilityRequest:
+      type: object
+      required: [roomIds, date, durationMinutes]
+      properties:
+        roomIds:
+          type: array
+          minItems: 1
+          items: {type: string, format: uuid}
+        date: {type: string, format: date}
+        durationMinutes: {type: integer, minimum: 30, multipleOf: 30}
+        preferredTime: {type: [string, 'null']}
+        guests: {type: integer, minimum: 1}
+
+    AvailabilityResponse:
+      type: object
+      required: [date, timezone, windows]
+      properties:
+        date: {type: string, format: date}
+        timezone: {type: string, example: Europe/Moscow}
+        windows: {type: array, items: {$ref: '#/components/schemas/AvailabilityWindow'}}
+
+    AvailabilityWindow:
+      type: object
+      required: [startsAt, maximumDurationMinutes]
+      properties:
+        startsAt: {type: string, format: date-time}
+        maximumDurationMinutes: {type: integer, minimum: 30, multipleOf: 30}
+        exactMatch: {type: boolean}
+
+    BookingCreate:
+      type: object
+      required: [primaryRoomId, roomIds, startsAt, durationMinutes, guests, legal]
+      properties:
+        primaryRoomId: {type: string, format: uuid}
+        roomIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, format: uuid}
+        startsAt: {type: string, format: date-time}
+        durationMinutes: {type: integer, minimum: 30, multipleOf: 30}
+        guests: {type: integer, minimum: 1}
+        eventType: {type: [string, 'null']}
+        eventName: {type: [string, 'null']}
+        serviceIds: {type: array, items: {type: string, format: uuid}}
+        onSitePaymentMethod: {type: string, enum: [card, cash]}
+        comment: {type: string, maxLength: 2000}
+        legal:
+          type: object
+          required: [termsVersion, privacyVersion, acceptedAt]
+          properties:
+            termsVersion: {type: string}
+            privacyVersion: {type: string}
+            acceptedAt: {type: string, format: date-time}
+
+    MoneyBreakdown:
+      type: object
+      required: [roomTotal, serviceTotal, total, prepayment, remainingOnSite, currency]
+      properties:
+        roomTotal: {type: number}
+        serviceTotal: {type: number}
+        total: {type: number}
+        prepayment: {type: number, description: 30 percent of total}
+        remainingOnSite: {type: number}
+        currency: {type: string, const: RUB}
+
+    Booking:
+      type: object
+      required: [id, publicNumber, status, venue, rooms, startsAt, endsAt, guests, money]
+      properties:
+        id: {type: string, format: uuid}
+        publicNumber: {type: string}
+        status: {type: string, enum: [pending, proposed, awaiting_payment, paid, expired, cancelled, visited, completed]}
+        venue: {$ref: '#/components/schemas/Venue'}
+        rooms: {type: array, items: {$ref: '#/components/schemas/RoomSummary'}}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: string, format: date-time}
+        guests: {type: integer}
+        clientName: {type: string}
+        clientPhone: {type: [string, 'null'], description: Null for partner before prepayment}
+        eventType: {type: [string, 'null']}
+        eventName: {type: [string, 'null']}
+        services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+        money: {$ref: '#/components/schemas/MoneyBreakdown'}
+        paymentHoldExpiresAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+
+    BookingMessage:
+      type: object
+      required: [id, senderRole, body, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        senderRole: {type: string, enum: [client, partner, admin]}
+        body: {type: string}
+        createdAt: {type: string, format: date-time}
+
+    ManualReservation:
+      type: object
+      required: [roomId, startsAt, endsAt, type]
+      properties:
+        roomId: {type: string, format: uuid}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: string, format: date-time}
+        type: {type: string, enum: [manual_booking, technical]}
+        clientName: {type: string}
+        clientPhone: {type: string}
+        guests: {type: integer, minimum: 1}
+        amount: {type: number, minimum: 0}
+        comment: {type: string}
+
+    TimeProposal:
+      type: object
+      required: [startsAt, durationMinutes]
+      properties:
+        startsAt: {type: string, format: date-time}
+        durationMinutes: {type: integer, minimum: 30, multipleOf: 30}
+        comment: {type: string, maxLength: 1000}
+
+    PaymentIntent:
+      type: object
+      required: [paymentId, amount, currency, redirectUrl, expiresAt]
+      properties:
+        paymentId: {type: string, format: uuid}
+        amount: {type: number}
+        currency: {type: string, const: RUB}
+        redirectUrl: {type: string, format: uri}
+        expiresAt: {type: string, format: date-time}
+
+    NotificationSettings:
+      type: object
+      required: [siteEnabled, emailEnabled, telegramEnabled]
+      properties:
+        siteEnabled: {type: boolean, const: true}
+        emailEnabled: {type: boolean}
+        emailAddress: {type: [string, 'null'], format: email}
+        telegramEnabled: {type: boolean}
+        telegramChatId: {type: [string, 'null']}
+
+    NotificationDelivery:
+      type: object
+      required: [id, channel, target, eventKey, status, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        channel: {type: string, enum: [email, telegram]}
+        target: {type: string}
+        eventKey: {type: string}
+        status: {type: string, enum: [queued, processing, sent, failed, cancelled]}
+        attempts: {type: integer, minimum: 0}
+        lastError: {type: [string, 'null']}
+        createdAt: {type: string, format: date-time}
+        sentAt: {type: [string, 'null'], format: date-time}
+
+    MigrationValidation:
+      type: object
+      required: [valid, format, version, collections, warnings]
+      properties:
+        valid: {type: boolean}
+        format: {type: string, const: rooms-migration}
+        version: {type: integer, const: 1}
+        collections: {type: object, additionalProperties: {type: integer}}
+        warnings: {type: array, items: {type: string}}
+
+    Error:
+      type: object
+      required: [code, message, requestId]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        requestId: {type: string}
+        fields:
+          type: object
+          additionalProperties: {type: string}
