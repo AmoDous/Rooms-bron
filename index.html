@@ -743,6 +743,9 @@
     .notification-item strong{display:block;font-size:14px}
     .notification-item span{display:block;margin-top:4px;color:var(--muted);font-size:12px;line-height:1.4}
     .notification-item time{color:var(--muted);font-size:11px;white-space:nowrap}
+    .channel-list{display:grid;gap:10px;margin-top:14px}.channel-option{display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,.7fr);gap:14px;align-items:center;border:1px solid var(--line);border-radius:14px;background:#fff;padding:13px}.channel-option.disabled{background:var(--mint)}
+    .channel-title{display:flex;align-items:flex-start;gap:9px}.channel-title input{width:18px;height:18px;min-height:18px;max-height:18px;flex:0 0 18px;margin:2px 0 0;accent-color:var(--green)}.channel-title strong{display:block;font-size:14px}.channel-title span{display:block;margin-top:3px;color:var(--muted);font-size:12px;line-height:1.4}
+    .delivery-list{display:grid;gap:8px;margin-top:12px}.delivery-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:start;border:1px solid var(--line);border-radius:14px;background:#fff;padding:12px}.delivery-channel{display:grid;place-items:center;min-width:72px;border-radius:9px;background:var(--paper-2);padding:7px 9px;color:var(--green);font-size:11px;font-weight:850;text-transform:uppercase}.delivery-row strong{display:block;font-size:13px}.delivery-row p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.42}.delivery-row time{color:var(--muted);font-size:10px;white-space:nowrap}
     .payment-shell{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(300px,.7fr);gap:18px;align-items:start}
     .payment-shell>*{min-width:0}
     .payment-card,.receipt-card{border:1px solid var(--line);border-radius:18px;background:#fff;padding:18px}
@@ -806,6 +809,7 @@
       .favorite-actions{grid-column:1/-1;margin-top:0}
       .notification-item{grid-template-columns:auto minmax(0,1fr)}
       .notification-item time{grid-column:2;white-space:normal}
+      .channel-option{grid-template-columns:1fr}.delivery-row{grid-template-columns:auto minmax(0,1fr)}.delivery-row time{grid-column:2;white-space:normal}.delivery-channel{min-width:64px}
       .related-rooms{grid-template-columns:1fr}
       .related-room{display:grid;grid-template-columns:112px minmax(0,1fr)}
       .related-room img{height:100%;min-height:104px}
@@ -1044,7 +1048,7 @@
     const cityCoordinates={"Воронеж":[51.6608,39.2003],"Москва":[55.7558,37.6173],"Санкт-Петербург":[59.9343,30.3351],"Краснодар":[45.0355,38.9753]};
     const slotStep=.5;
     const times=Array.from({length:40},(_,i)=>hourLabel(10+i*slotStep));
-    const store={accounts:"rooms_accounts_v30",session:"rooms_session_v30",bookings:"rooms_bookings_v30",favorites:"rooms_favorites_v30",reviews:"rooms_reviews_v30",partner:"rooms_partner_v30",partnerAuth:"rooms_partner_auth_v30",partnerData:"rooms_partner_data_v30",partnerAccounts:"rooms_partner_accounts_v30",venueAdmin:"rooms_venue_admin_v30",partnerNotice:"rooms_partner_notice_v30",userNotice:"rooms_user_notice_v30",adminNotice:"rooms_admin_notice_v30",cityPreference:"rooms_city_preference_v30",support:"rooms_support_v30",activity:"rooms_activity_v30",moderation:"rooms_moderation_v30",chat:"rooms_chat_v30",payouts:"rooms_payouts_v30",subscriptionBilling:"rooms_subscription_billing_v30",reminders:"rooms_reminders_v30",payments:"rooms_payments_v30",consents:"rooms_consents_v30"};
+    const store={accounts:"rooms_accounts_v30",session:"rooms_session_v30",bookings:"rooms_bookings_v30",favorites:"rooms_favorites_v30",reviews:"rooms_reviews_v30",partner:"rooms_partner_v30",partnerAuth:"rooms_partner_auth_v30",partnerData:"rooms_partner_data_v30",partnerAccounts:"rooms_partner_accounts_v30",venueAdmin:"rooms_venue_admin_v30",partnerNotice:"rooms_partner_notice_v30",userNotice:"rooms_user_notice_v30",adminNotice:"rooms_admin_notice_v30",cityPreference:"rooms_city_preference_v30",support:"rooms_support_v30",activity:"rooms_activity_v30",moderation:"rooms_moderation_v30",chat:"rooms_chat_v30",payouts:"rooms_payouts_v30",subscriptionBilling:"rooms_subscription_billing_v30",reminders:"rooms_reminders_v30",payments:"rooms_payments_v30",consents:"rooms_consents_v30",notificationPrefs:"rooms_notification_preferences_v30",notificationOutbox:"rooms_notification_outbox_v30"};
     const legalVersion="draft-2026-07-13";
     const adminAccess={login:"admin@rooms.ru",password:"rooms2026"};
     const accountantAccess={login:"accountant@rooms.ru",password:"rooms2026"};
@@ -2452,6 +2456,80 @@
     }
     function adminNoticeState(){return read(store.adminNotice,{read:{}})||{read:{}}}
     function saveAdminNoticeState(data){write(store.adminNotice,data);updateNoticeBadge()}
+    function notificationPreferences(){return read(store.notificationPrefs,{})||{}}
+    function notificationOutbox(){return read(store.notificationOutbox,[])||[]}
+    function saveNotificationOutbox(list){write(store.notificationOutbox,list.slice(0,250))}
+    function notificationPreferenceKey(role,ownerKey){return `${role}:${ownerKey}`}
+    function notificationSettings(role,ownerKey,email="",telegram=""){
+      const saved=notificationPreferences()[notificationPreferenceKey(role,ownerKey)]||{};
+      return {site:true,emailEnabled:saved.emailEnabled??!!email,emailAddress:saved.emailAddress??email,telegramEnabled:saved.telegramEnabled??false,telegramAddress:saved.telegramAddress??telegram,updatedAt:saved.updatedAt||""};
+    }
+    function notificationOwner(role){
+      if(role==="client"){
+        const acc=current();if(!acc||isAdmin(acc)||isAccountant(acc))return null;
+        return {role,key:phone(acc.phone),label:acc.name||"Клиент",email:acc.email||"",telegram:""};
+      }
+      if(role==="partner"){
+        const account=currentPartnerAccount(),data=partnerData();if(!account)return null;
+        return {role,key:data.venue.id||account.venueId||account.id,label:data.venue.title||account.venueTitle||"Площадка",email:data.venue.email||account.login||"",telegram:""};
+      }
+      if(role==="admin")return {role,key:"rooms-admin",label:"Админ Rooms",email:adminAccess.login,telegram:""};
+      return null;
+    }
+    function queueExternalNotification({role,ownerKey,email="",telegram="",event="service",title,details="",dedupe}){
+      if(!role||!ownerKey||!title)return [];
+      const settings=notificationSettings(role,ownerKey,email,telegram),channels=[];
+      if(settings.emailEnabled&&String(settings.emailAddress||"").trim())channels.push(["email",String(settings.emailAddress).trim()]);
+      if(settings.telegramEnabled&&String(settings.telegramAddress||"").trim())channels.push(["telegram",String(settings.telegramAddress).trim()]);
+      if(!channels.length)return [];
+      const list=notificationOutbox(),created=[],createdAt=new Date().toISOString(),baseDedupe=String(dedupe||`${event}|${title}|${details}`);
+      channels.forEach(([channel,target])=>{
+        const dedupeKey=`${role}|${ownerKey}|${channel}|${baseDedupe}`;if(list.some(item=>item.dedupeKey===dedupeKey))return;
+        created.push({id:`OUT-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`,role,ownerKey,channel,target,event,title,details,dedupeKey,status:"waiting_backend",createdAt});
+      });
+      if(created.length)saveNotificationOutbox([...created,...list]);
+      return created;
+    }
+    function queueClientExternal(b,event,title,details="",dedupe=""){
+      const key=phone(b?.phone);if(!key)return [];
+      const acc=accounts().find(item=>phone(item.phone)===key);
+      return queueExternalNotification({role:"client",ownerKey:key,email:acc?.email||"",event,title,details,dedupe:dedupe||`${b.id}|${event}`});
+    }
+    function queuePartnerExternal(event,title,details="",dedupe=""){
+      const data=partnerData();return queueExternalNotification({role:"partner",ownerKey:data.venue.id,email:data.venue.email||"",event,title,details,dedupe:dedupe||`${event}|${details}`});
+    }
+    function queueAdminExternal(item){
+      return queueExternalNotification({role:"admin",ownerKey:"rooms-admin",email:adminAccess.login,event:item.type||"admin",title:item.title,details:item.details||"",dedupe:item.id});
+    }
+    function syncAdminExternalNotifications(items=adminNotificationItems()){items.forEach(queueAdminExternal)}
+    function notificationRoleLabel(role){return ({client:"Клиент",partner:"Партнёр",admin:"Rooms"})[role]||role}
+    function deliveryStatusLabel(status){return status==="demo_sent"?"обработано в демо":status==="failed"?"ошибка":"ждёт backend"}
+    function deliveryStatusClass(status){return status==="demo_sent"?"paid":status==="failed"?"cancelled":"review"}
+    function notificationDeliveryPanel(){
+      const list=notificationOutbox(),waiting=list.filter(x=>x.status==="waiting_backend").length,email=list.filter(x=>x.channel==="email").length,telegram=list.filter(x=>x.channel==="telegram").length;
+      const rows=list.slice(0,10).map(item=>`<article class="delivery-row"><span class="delivery-channel">${esc(item.channel)}</span><div><strong>${esc(item.title)}</strong><p>${esc(notificationRoleLabel(item.role))} · ${esc(item.target)}${item.details?` · ${esc(item.details)}`:""}</p><span class="status ${deliveryStatusClass(item.status)}" style="margin-top:7px">${deliveryStatusLabel(item.status)}</span></div><time>${new Date(item.createdAt).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></article>`).join("");
+      return `<section class="admin-panel" data-notification-delivery><div class="admin-item-head"><div><h3>Внешние уведомления</h3><p class="muted" style="margin:0">Очередь для email и Telegram. Сейчас она проверяется в демо-режиме; рабочую отправку выполнит серверный worker.</p></div><span class="status ${waiting?"review":"paid"}">${waiting?`${waiting} ждут backend`:"очередь обработана"}</span></div><div class="dash-grid" style="margin-top:12px"><div class="dash-card"><span class="muted">Всего</span><strong>${list.length}</strong></div><div class="dash-card"><span class="muted">Email</span><strong>${email}</strong></div><div class="dash-card"><span class="muted">Telegram</span><strong>${telegram}</strong></div><div class="dash-card"><span class="muted">В очереди</span><strong>${waiting}</strong></div></div><div class="chips" style="margin-top:12px"><button class="btn soft" data-notification-settings="admin" type="button">Настроить каналы</button><button class="btn primary" data-process-notification-outbox type="button" ${waiting?"":"disabled"}>Обработать очередь в демо</button></div><div class="delivery-list">${rows||`<div class="empty" style="display:block">Внешних уведомлений пока нет.</div>`}</div></section>`;
+    }
+    function renderNotificationSettings(role){
+      const owner=notificationOwner(role);if(!owner)return role==="partner"?renderPartnerLogin():renderAuth();
+      const settings=notificationSettings(role,owner.key,owner.email,owner.telegram),recent=notificationOutbox().filter(x=>x.role===role&&x.ownerKey===owner.key).slice(0,4),back=role==="client"?"profile":role;
+      const history=recent.map(item=>`<article class="delivery-row"><span class="delivery-channel">${esc(item.channel)}</span><div><strong>${esc(item.title)}</strong><p>${esc(item.target)}</p></div><time>${deliveryStatusLabel(item.status)}</time></article>`).join("");
+      openModal(`<div class="admin-item-head"><div><span class="kicker">${esc(notificationRoleLabel(role))}</span><h2 style="margin:4px 0 6px">Каналы уведомлений</h2><p class="muted" style="margin:0">Выберите, куда отправлять важные статусы, сообщения и напоминания.</p></div><button class="btn" data-notification-back="${back}" type="button">Назад</button></div><form id="notificationSettingsForm" data-notification-role="${role}" data-notification-owner="${esc(owner.key)}" style="margin-top:14px"><div class="channel-list"><div class="channel-option disabled"><div class="channel-title"><input type="checkbox" checked disabled><div><strong>Внутри сайта</strong><span>Основной канал Rooms всегда включён.</span></div></div><span class="status paid">включено</span></div><div class="channel-option"><div class="channel-title"><input name="emailEnabled" type="checkbox" ${settings.emailEnabled?"checked":""}><div><strong>Email</strong><span>Подтверждения, оплаты и изменения статуса.</span></div></div><input name="emailAddress" type="email" value="${esc(settings.emailAddress)}" placeholder="mail@example.com"></div><div class="channel-option"><div class="channel-title"><input name="telegramEnabled" type="checkbox" ${settings.telegramEnabled?"checked":""}><div><strong>Telegram</strong><span>Срочные заявки, чат и напоминания.</span></div></div><input name="telegramAddress" value="${esc(settings.telegramAddress)}" placeholder="@username или chat ID"></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" name="notificationAction" value="save" type="submit">Сохранить</button><button class="btn soft" name="notificationAction" value="test" type="submit">Создать тест в очереди</button></div></form><div class="chat-guard">В прототипе сообщение попадёт в журнал доставки. Фактическая отправка начнётся после подключения backend, почтового сервиса и Telegram-бота.</div>${recent.length?`<h3 style="margin:18px 0 0">Последние доставки</h3><div class="delivery-list">${history}</div>`:""}`,true);
+    }
+    function submitNotificationSettings(form,submitter){
+      const role=form.dataset.notificationRole,owner=notificationOwner(role);if(!owner)return;
+      const fd=new FormData(form),emailEnabled=fd.has("emailEnabled"),telegramEnabled=fd.has("telegramEnabled"),emailAddress=String(fd.get("emailAddress")||"").trim(),telegramAddress=String(fd.get("telegramAddress")||"").trim();
+      if(emailEnabled&&!emailAddress){form.emailAddress.focus();return toast("Укажите email или отключите этот канал.")}
+      if(telegramEnabled&&!telegramAddress){form.telegramAddress.focus();return toast("Укажите Telegram username или chat ID.")}
+      const all=notificationPreferences(),key=notificationPreferenceKey(role,owner.key);all[key]={site:true,emailEnabled,emailAddress,telegramEnabled,telegramAddress,updatedAt:new Date().toISOString()};write(store.notificationPrefs,all);
+      const test=submitter?.value==="test";if(test){const queued=queueExternalNotification({role,ownerKey:owner.key,email:emailAddress,telegram:telegramAddress,event:"test",title:"Тестовое уведомление Rooms",details:`Проверка каналов для ${owner.label}`,dedupe:`test|${Date.now()}`});toast(queued.length?`В очередь добавлено: ${queued.length}.`:"Внешние каналы выключены.")}
+      else toast("Настройки уведомлений сохранены.");
+      renderNotificationSettings(role);
+    }
+    function processNotificationOutbox(){
+      const list=notificationOutbox(),now=new Date().toISOString(),waiting=list.filter(x=>x.status==="waiting_backend").length;if(!waiting)return toast("Очередь уже обработана.");
+      saveNotificationOutbox(list.map(item=>item.status==="waiting_backend"?{...item,status:"demo_sent",processedAt:now}:item));logActivity("notification_delivery","Демо-обработка внешних уведомлений",`${waiting} сообщений`,'admin');renderAdminDashboard(true);toast(`Обработано в демо: ${waiting}.`);
+    }
     function adminNotificationItems(){
       const stateMap=adminNoticeState().read||{},items=[],fallbackDate=`${today}T00:00:00`;
       adminBookings().forEach(b=>{
@@ -2514,6 +2592,7 @@
       const item={id:`N-${Date.now().toString(36)}`,bookingId:b.id,status,room:b.room,venue:b.venue,date:b.proposal?.date||b.date,time:b.proposal?.time||b.time,created,read:false};
       all[key]={...prev,unread:(prev.unread||0)+1,lastId:b.id,lastStatus:status,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,30)};
       saveUserNotices(all);
+      queueClientExternal(b,status,userNoticeTitle(status),`${b.venue} · ${b.room} · ${item.date} в ${item.time}`,`${b.id}|${status}`);
       const acc=current();
       if(acc&&!isAdmin(acc)&&phone(acc.phone)===key)showUserNotice(b,status);
       updateNoticeBadge();
@@ -2528,6 +2607,7 @@
       const key=phone(b.phone);if(!key)return;
       const all=userNotices(),prev=all[key]||{unread:0,items:[]},created=new Date().toISOString(),preview=String(text||"").slice(0,90),item={id:`N-${Date.now().toString(36)}`,bookingId:b.id,status:"chat",preview,room:b.room,venue:b.venue,date:b.date,time:b.time,created,read:false};
       all[key]={...prev,unread:(prev.unread||0)+1,lastId:b.id,lastStatus:"chat",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,30)};saveUserNotices(all);
+      queueClientExternal(b,"chat",userNoticeTitle("chat"),`${b.venue} · ${b.room} · ${preview}`,item.id);
       const acc=current();if(acc&&!isAdmin(acc)&&phone(acc.phone)===key)showUserChatNotice(b,preview);updateNoticeBadge();
     }
     function renderUserNotifications(){
@@ -2615,6 +2695,7 @@
       if(!partnerRoomIds().some(id=>bookingContainsRoom(b,id)))return;
       const prev=partnerNotice(),created=new Date().toISOString(),item={id:`PN-${Date.now().toString(36)}`,bookingId:b.id,type:"booking",room:b.room,name:b.name,date:b.date,time:b.time,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,lastId:b.id,type:"booking",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal("booking","Новая заявка на бронь",`${b.room} · ${b.date} в ${b.time} · ${b.guests} гостей`,`${b.id}|booking`);
       if(currentPartnerAccount()){
         showPartnerNotice(b);
         if(E.modal.classList.contains("open")&&E.modalContent.querySelector(".partner-cabinet")){partnerBookingFilter="new";renderPartnerCabinet(true)}
@@ -2624,6 +2705,7 @@
       if(!partnerRoomIds().some(id=>bookingContainsRoom(b,id)))return;
       const prev=partnerNotice(),created=new Date().toISOString(),item={id:`PN-${Date.now().toString(36)}`,bookingId:b.id,type:"payment",room:b.room,name:b.name,date:b.date,time:b.time,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,lastId:b.id,type:"payment",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal("payment","Клиент внёс предоплату",`${b.room} · ${b.date} в ${b.time} · контакт открыт`,`${b.id}|payment`);
       if(currentPartnerAccount()){
         showPartnerPaymentNotice(b);
         if(E.modal.classList.contains("open")&&E.modalContent.querySelector(".partner-cabinet")){partnerBookingFilter="booked";renderPartnerCabinet(true)}
@@ -2633,18 +2715,21 @@
       if(!partnerRoomIds().some(id=>bookingContainsRoom(b,id)))return;
       const prev=partnerNotice(),created=new Date().toISOString(),preview=String(text||"").slice(0,90),item={id:`PN-${Date.now().toString(36)}`,bookingId:b.id,type:"chat",preview,room:b.room,name:b.name,date:b.date,time:b.time,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,lastId:b.id,type:"chat",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal("chat","Новое сообщение клиента",`${b.room} · ${b.name} · ${preview}`,item.id);
       if(currentPartnerAccount())showPartnerChatNotice(b,preview);
     }
     function notifyPartnerPayout(batch){
       const data=partnerData();if(batch.venueId!==data.venue.id)return;
       const prev=partnerNotice(),created=new Date().toISOString(),type=batch.status==="paid"?"payout_paid":"payout_sent",item={id:`PN-${Date.now().toString(36)}`,payoutId:batch.id,type,room:batch.venueTitle,detail:money(batch.amount),created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,type,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal(type,batch.status==="paid"?"Выплата выполнена":"Выплата направлена",`${batch.venueTitle} · ${money(batch.amount)}`,`${batch.id}|${type}`);
       if(currentPartnerAccount()){E.partnerAlert.dataset.noticeTarget="partner-payout";E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">${batch.status==="paid"?"Выплата выполнена":"Выплата направлена"}</span><strong>${money(batch.amount)}</strong><span>${esc(batch.venueTitle)} · нажмите, чтобы открыть баланс</span></div></div>`;E.partnerAlert.classList.add("show");clearTimeout(window.__partnerNoticeTimer);window.__partnerNoticeTimer=setTimeout(()=>E.partnerAlert.classList.remove("show"),9000);playPartnerClick()}
     }
     function notifyPartnerModeration(item,status){
       const prev=partnerNotice(),created=new Date().toISOString(),type=status==="approved"?"moderation_approved":"moderation_rejected";
       const noticeItem={id:`PN-${Date.now().toString(36)}`,moderationId:item.id,type,room:item.targetTitle||"Карточка площадки",detail:moderationStatusLabel(status),created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,type,updated:created,items:[noticeItem,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal(type,status==="approved"?"Изменения одобрены":"Изменения отклонены",`${noticeItem.room} · ${noticeItem.detail}`,`${item.id}|${status}`);
       if(currentPartnerAccount()&&E.modalContent.querySelector(".partner-cabinet")){
         E.partnerAlert.dataset.noticeTarget="partner-moderation";
         E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">Решение Rooms</span><strong>${esc(noticeItem.room)} · ${esc(noticeItem.detail)}</strong><span>Нажмите, чтобы открыть изменения карточки</span></div></div>`;
@@ -2654,6 +2739,7 @@
     function notifyPartnerTariff(venueData,detail){
       const prev=partnerNotice(),created=new Date().toISOString(),item={id:`PN-${Date.now().toString(36)}`,type:"partner_mode",room:venueData.title||"Площадка",detail,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,type:"partner_mode",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal("partner_mode","Тариф площадки изменён",`${item.room} · ${detail}`,`${venueData.id||item.room}|${detail}`);
       if(currentPartnerAccount()){
         E.partnerAlert.dataset.noticeTarget="partner-tariff";
         E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">Тариф площадки изменён</span><strong>${esc(detail)}</strong><span>Нажмите, чтобы открыть тариф и начисления</span></div></div>`;
@@ -2661,12 +2747,13 @@
       }
     }
     function notifyPartnerVerification(venueData,status){
-      const prev=partnerNotice(),created=new Date().toISOString(),detail=verificationStatusLabel(status),item={id:`PN-${Date.now().toString(36)}`,type:"verification",room:venueData.title||"Площадка",detail,created,read:false};savePartnerNotice({...prev,unread:(prev.unread||0)+1,type:"verification",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      const prev=partnerNotice(),created=new Date().toISOString(),detail=verificationStatusLabel(status),item={id:`PN-${Date.now().toString(36)}`,type:"verification",room:venueData.title||"Площадка",detail,created,read:false};savePartnerNotice({...prev,unread:(prev.unread||0)+1,type:"verification",updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});queuePartnerExternal("verification","Статус верификации изменён",`${item.room} · ${detail}`,`${venueData.id||item.room}|${status}`);
       if(currentPartnerAccount()){E.partnerAlert.dataset.noticeTarget="partner-readiness";E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">Верификация площадки</span><strong>${esc(detail)}</strong><span>Нажмите, чтобы открыть готовность к публикации</span></div></div>`;E.partnerAlert.classList.add("show");clearTimeout(window.__partnerNoticeTimer);window.__partnerNoticeTimer=setTimeout(()=>E.partnerAlert.classList.remove("show"),9000);playPartnerClick()}
     }
     function notifyPartnerSubscriptionInvoice(invoice,event="created"){
       const prev=partnerNotice(),created=new Date().toISOString(),type=event==="paid"?"subscription_paid":event==="overdue"?"subscription_overdue":"subscription_due",title=event==="paid"?"Тариф оплачен":event==="overdue"?"Оплата тарифа просрочена":"Новое начисление по тарифу",detail=`${billingMonthLabel(invoice.month)} · ${money(invoice.total)}`,item={id:`PN-${Date.now().toString(36)}`,invoiceId:invoice.id,type,room:invoice.venueTitle,detail,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,type,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal(type,title,`${invoice.venueTitle} · ${detail}`,`${invoice.id}|${event}`);
       if(currentPartnerAccount()){
         E.partnerAlert.dataset.noticeTarget="partner-tariff";E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">${title}</span><strong>${esc(detail)}</strong><span>Нажмите, чтобы открыть начисления</span></div></div>`;
         E.partnerAlert.classList.add("show");clearTimeout(window.__partnerNoticeTimer);window.__partnerNoticeTimer=setTimeout(()=>E.partnerAlert.classList.remove("show"),9000);playPartnerClick();
@@ -2679,6 +2766,7 @@
       const key=phone(b.phone);if(!key)return false;
       const all=userNotices(),prev=all[key]||{unread:0,items:[]},created=new Date().toISOString(),item={id:`N-${Date.now().toString(36)}`,bookingId:b.id,status,detail,room:b.room,venue:b.venue,date:b.date,time:b.time,created,read:false};
       all[key]={...prev,unread:(prev.unread||0)+1,lastId:b.id,lastStatus:status,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,30)};saveUserNotices(all);
+      queueClientExternal(b,status,userNoticeTitle(status),`${b.venue} · ${b.room} · ${detail||`${b.date} в ${b.time}`}`,`${b.id}|${status}`);
       const acc=current();if(acc&&!isAdmin(acc)&&!isAccountant(acc)&&phone(acc.phone)===key)showUserNotice(b,status);updateNoticeBadge();return true;
     }
     function partnerReminderTitle(type){return ({confirm_reminder:"Заявка ждёт подтверждения",booking_tomorrow:"Бронь уже завтра",booking_soon:"До начала меньше двух часов",client_cancelled:"Клиент отменил бронь"})[type]||"Напоминание по заявке"}
@@ -2686,6 +2774,7 @@
       if(!partnerRoomIds().some(id=>bookingContainsRoom(b,id)))return false;
       const prev=partnerNotice(),created=new Date().toISOString(),item={id:`PN-${Date.now().toString(36)}`,bookingId:b.id,type,detail,room:b.room,name:b.name,date:b.date,time:b.time,created,read:false};
       savePartnerNotice({...prev,unread:(prev.unread||0)+1,lastId:b.id,type,updated:created,items:[item,...(Array.isArray(prev.items)?prev.items:[])].slice(0,40)});
+      queuePartnerExternal(type,partnerReminderTitle(type),`${b.room} · ${detail||`${b.date} в ${b.time}`}`,`${b.id}|${type}`);
       if(currentPartnerAccount()){E.partnerAlert.dataset.noticeTarget="partner";E.partnerAlert.dataset.bookingId=b.id;E.partnerAlert.innerHTML=`<div class="notice-row"><span class="notice-dot"></span><div><span class="kicker">Напоминание партнёру</span><strong>${esc(partnerReminderTitle(type))}</strong><span>${esc(b.room)} · ${esc(detail||`${b.date} в ${b.time}`)} · нажмите, чтобы открыть</span></div></div>`;E.partnerAlert.classList.add("show");clearTimeout(window.__partnerNoticeTimer);window.__partnerNoticeTimer=setTimeout(()=>E.partnerAlert.classList.remove("show"),9000);playPartnerClick()}
       return true;
     }
@@ -3061,11 +3150,12 @@
       const filtered=profileBookingFilter==="all"?books:books.filter(b=>profileBookingGroup(b)===profileBookingFilter);
       const emptyText=books.length?`В разделе «${({active:"Активные",completed:"Завершённые",cancelled:"Отменённые"})[profileBookingFilter]||"Все"}» заявок пока нет.`:"Пока заявок нет. Выберите помещение и отправьте бронь.";
       const filters=[["active","Активные",counts.active],["completed","Завершённые",counts.completed],["cancelled","Отменённые",counts.cancelled],["all","Все",books.length]].map(([id,label,count])=>`<button class="booking-filter ${profileBookingFilter===id?"active":""}" data-profile-booking-filter="${id}" type="button">${label} · ${count}</button>`).join("");
-      openModal(`<div class="profile-head"><div class="avatar">${esc((acc.name||"R").slice(0,1).toUpperCase())}</div><div><h2 style="margin:0">${esc(acc.name||"Профиль")}</h2><span class="muted">${esc(acc.email||"Почту можно добавить позже")} · ${esc(acc.phone||"")}</span></div></div>${!acc.email?`<div class="profile-block" style="background:#fff7e8;border-color:#f0d9ad"><strong style="font-size:16px;margin:0">Укажите почту, чтобы получать подтверждения брони</strong></div>`:""}<div class="profile-grid"><div class="profile-block"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="profile-block"><span class="muted">Избранное</span><strong>${fav.size}</strong></div><div class="profile-block"><span class="muted">Город</span><strong style="font-size:18px">${esc(acc.city||state.city)}</strong></div><div class="profile-block"><span class="muted">Бонусы</span><strong>0</strong></div></div><div class="profile-block"><button class="profile-row profile-row-button" data-profile-notifications type="button"><span>Уведомления</span><span>${Number(currentUserNotice().unread||0)||"›"}</span></button><button class="profile-row profile-row-button" data-profile-favorites type="button"><span>Любимое</span><span>›</span></button><button class="profile-row profile-row-button" data-profile-personal type="button"><span>Личные данные</span><span>›</span></button></div><div class="profile-block" data-profile-bookings><h3 style="margin:0">Мои заявки</h3><div class="booking-filters">${filters}</div><div class="admin-list">${filtered.length?filtered.map(b=>bookingCard(b,"profile")).join(""):`<p class="muted" style="margin:0">${emptyText}</p>`}</div></div><div class="chips"><button class="btn" data-logout type="button">Выйти</button><button class="btn soft" data-partner-login type="button">Вход для партнёров</button></div>`,true,!focusBookings);
+      openModal(`<div class="profile-head"><div class="avatar">${esc((acc.name||"R").slice(0,1).toUpperCase())}</div><div><h2 style="margin:0">${esc(acc.name||"Профиль")}</h2><span class="muted">${esc(acc.email||"Почту можно добавить позже")} · ${esc(acc.phone||"")}</span></div></div>${!acc.email?`<div class="profile-block" style="background:#fff7e8;border-color:#f0d9ad"><strong style="font-size:16px;margin:0">Укажите почту, чтобы получать подтверждения брони</strong></div>`:""}<div class="profile-grid"><div class="profile-block"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="profile-block"><span class="muted">Избранное</span><strong>${fav.size}</strong></div><div class="profile-block"><span class="muted">Город</span><strong style="font-size:18px">${esc(acc.city||state.city)}</strong></div><div class="profile-block"><span class="muted">Бонусы</span><strong>0</strong></div></div><div class="profile-block"><button class="profile-row profile-row-button" data-profile-notifications type="button"><span>Уведомления</span><span>${Number(currentUserNotice().unread||0)||"›"}</span></button><button class="profile-row profile-row-button" data-notification-settings="client" type="button"><span>Каналы уведомлений</span><span>›</span></button><button class="profile-row profile-row-button" data-profile-favorites type="button"><span>Любимое</span><span>›</span></button><button class="profile-row profile-row-button" data-profile-personal type="button"><span>Личные данные</span><span>›</span></button></div><div class="profile-block" data-profile-bookings><h3 style="margin:0">Мои заявки</h3><div class="booking-filters">${filters}</div><div class="admin-list">${filtered.length?filtered.map(b=>bookingCard(b,"profile")).join(""):`<p class="muted" style="margin:0">${emptyText}</p>`}</div></div><div class="chips"><button class="btn" data-logout type="button">Выйти</button><button class="btn soft" data-partner-login type="button">Вход для партнёров</button></div>`,true,!focusBookings);
       if(focusBookings)requestAnimationFrame(()=>document.querySelector("[data-profile-bookings]")?.scrollIntoView({behavior:"smooth",block:"start"}));
     }
     function renderAdminDashboard(keep=false){
       const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=customReviews().sort((a,b)=>reviewRank(a)-reviewRank(b)),moderation=moderationRequests().sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1)||new Date(b.updated||b.created)-new Date(a.updated||a.created)),adminCounts={new:0,payment:0,booked:0,history:0},adminUnread=adminUnreadCount();
+      syncAdminExternalNotifications(adminNotificationItems());
       books.forEach(b=>adminCounts[partnerBookingGroup(b)]++);
       const pending=adminCounts.new,confirmed=adminCounts.payment+adminCounts.booked,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
       const paidBooks=books.filter(isPrepayPaid),refundPendingBooks=books.filter(b=>b.paymentStatus==="refund_pending"),refundedBooks=books.filter(b=>b.paymentStatus==="refunded");
@@ -3089,9 +3179,10 @@
       openModal(`<div class="admin-dashboard">
         <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. Это v1 на локальных данных, но уже с рабочими статусами.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(adminFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(adminFinance.extras)}</strong></div><div class="dash-card"><span class="muted">Заявки с допами</span><strong>${adminFinance.withServices}</strong></div></div>
-        <div class="chips"><button class="btn soft" data-admin-notifications type="button">Уведомления${adminUnread?` · ${adminUnread}`:""}</button><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
+        <div class="chips"><button class="btn soft" data-admin-notifications type="button">Уведомления${adminUnread?` · ${adminUnread}`:""}</button><button class="btn soft" data-notification-settings="admin" type="button">Каналы связи</button><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
         ${adminAnalyticsPanel(books)}
         ${adminReminderPanel(books)}
+        ${notificationDeliveryPanel()}
         ${adminManualBookingsPanel(partnerData())}
         ${paymentLedgerPanel("admin")}
         ${consentLedgerPanel()}
@@ -3146,7 +3237,7 @@
       openPartnerWorkspace(`<div class="partner-cabinet">
         <div class="partner-title"><span class="kicker">Кабинет партнёра</span><h2>${esc(data.venue.title)}</h2><p class="muted">Здесь площадка редактирует информацию о заведении, помещениях внутри него и отмечает занятость. Занятые часы сразу пропадают из свободных окон для клиента.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Заявки</span><strong>${books.length}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(partnerFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(partnerFinance.extras)}</strong></div><div class="dash-card"><span class="muted">В каталоге</span><strong>${publishedIds.length}</strong></div></div>
-        <div class="chips"><button class="btn soft" data-partner-notifications type="button">Уведомления${Number(partnerNotice().unread||0)?` · ${Number(partnerNotice().unread)}`:""}</button><button class="btn soft" data-export="partner" type="button">Экспорт всех броней CSV</button>${pendingModeration?`<span class="status review">На проверке · ${pendingModeration}</span>`:""}<span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений · занято вручную ${durationText(busyTotal)} · занято заявками ${durationText(bookedTotal)}</span></div>
+        <div class="chips"><button class="btn soft" data-partner-notifications type="button">Уведомления${Number(partnerNotice().unread||0)?` · ${Number(partnerNotice().unread)}`:""}</button><button class="btn soft" data-notification-settings="partner" type="button">Каналы связи</button><button class="btn soft" data-export="partner" type="button">Экспорт всех броней CSV</button>${pendingModeration?`<span class="status review">На проверке · ${pendingModeration}</span>`:""}<span class="muted">${publicationStatusLabel(data.venue.publicationStatus)} · ${cabinetStatusLabel(data.venue.cabinetStatus)} · ${esc(data.venue.type||"Тип площадки не указан")} · ${ids.length} помещений · занято вручную ${durationText(busyTotal)} · занято заявками ${durationText(bookedTotal)}</span></div>
         ${partnerReminderPanel(books)}
         ${manualBookingPanel(saved)}
         ${cancelledManualBookingPanel(saved)}
@@ -3793,11 +3884,14 @@
     E.modal.addEventListener("click",e=>{if(e.target===E.modal)requestCloseModal()});
     E.partnerForm.addEventListener("submit",submitPartnerLead);
     document.addEventListener("submit",e=>{if(e.target.id==="bookingChatForm"){e.preventDefault();submitBookingChat(e.target)}});
-    document.addEventListener("submit",e=>{if(e.target.matches("[data-booking-note-form]")){e.preventDefault();saveBookingNote(e.target)}if(e.target.matches("[data-review-reply-form]")){e.preventDefault();saveReviewReply(e.target)}if(e.target.id==="supportForm"){e.preventDefault();submitSupportCase(e.target)}if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="paymentForm"){e.preventDefault();submitPayment(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerPasswordChange"){e.preventDefault();changePartnerPassword(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}if(e.target.id==="manualBookingEdit"){e.preventDefault();saveManualBookingEdit(e.target)}if(e.target.id==="manualBookingCancel"){e.preventDefault();cancelManualBooking(e.target)}});
+    document.addEventListener("submit",e=>{if(e.target.id==="notificationSettingsForm"){e.preventDefault();submitNotificationSettings(e.target,e.submitter);return}if(e.target.matches("[data-booking-note-form]")){e.preventDefault();saveBookingNote(e.target)}if(e.target.matches("[data-review-reply-form]")){e.preventDefault();saveReviewReply(e.target)}if(e.target.id==="supportForm"){e.preventDefault();submitSupportCase(e.target)}if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="paymentForm"){e.preventDefault();submitPayment(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerPasswordChange"){e.preventDefault();changePartnerPassword(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}if(e.target.id==="manualBookingEdit"){e.preventDefault();saveManualBookingEdit(e.target)}if(e.target.id==="manualBookingCancel"){e.preventDefault();cancelManualBooking(e.target)}});
     document.addEventListener("change",e=>{if(e.target.matches("[data-manual-edit-room],[data-manual-edit-date]")){syncManualEditSchedule(e.target.form);return}if(e.target.matches("[data-busy-type]")){const fields=e.target.form?.querySelector("[data-manual-booking-fields]"),manual=e.target.value==="manual";if(fields)fields.hidden=!manual;fields?.querySelectorAll("[data-manual-required]").forEach(input=>input.required=manual);return}if(e.target.matches("[data-special-mode]")){const fields=e.target.form?.querySelector("[data-special-fields]");if(fields)fields.hidden=e.target.value!=="custom";return}if(e.target.matches('[name^="work_"][name$="_enabled"]')){e.target.closest(".schedule-day")?.classList.toggle("off",!e.target.checked);return}if(e.target.matches("[data-proposal-date],[data-proposal-time],[data-proposal-hours]")){updateProposalForm(e.target.form);return}if(e.target.matches("[data-booking-date],[data-booking-time],[data-booking-hours],[data-booking-service],[data-booking-extra-room]")){updateBookingForm(e.target.form);return}if(e.target.matches("[data-detail-service]")){toggleDetailService(e.target);return}if(e.target.matches("[data-detail-extra-room]")){toggleDetailExtraRoom(e.target);return}if(e.target.matches("[data-detail-date]")){state.date=e.target.value;state.time="";E.date.value=state.date;syncDateDisplay();renderSpace(e.target.dataset.detailDate,true)}if(e.target.matches("[data-detail-hours]")){state.hours=Number(e.target.value);E.hours.value=String(state.hours);renderSpace(e.target.dataset.detailHours,true)}if(e.target.matches("[data-admin-booking-event]")){adminBookingEventFilter=e.target.value;renderAdminDashboard(true);return}if(e.target.matches("[data-partner-booking-event]")){partnerBookingEventFilter=e.target.value;renderPartnerCabinet(true);return}if(e.target.matches("[data-partner-busy-room]")){state.partnerRoom=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-partner-busy-date]")){state.partnerDate=e.target.value;state.partnerWeekStart=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-photo-upload]"))handlePhotoUpload(e.target)});
     document.addEventListener("click",e=>{
       const infoBack=e.target.closest("[data-info-back]");if(infoBack){restoreInfoPage();return}
       const infoPage=e.target.closest("[data-info-page]");if(infoPage){renderInfoPage(infoPage.dataset.infoPage,!!infoPage.closest("#modal"));return}
+      const notificationSettingsButton=e.target.closest("[data-notification-settings]");if(notificationSettingsButton){renderNotificationSettings(notificationSettingsButton.dataset.notificationSettings);return}
+      const notificationBack=e.target.closest("[data-notification-back]");if(notificationBack){const area=notificationBack.dataset.notificationBack;if(area==="profile")renderProfile();else if(area==="partner")renderPartnerCabinet();else renderAdminDashboard();return}
+      if(e.target.closest("[data-process-notification-outbox]")){processNotificationOutbox();return}
       const detectCity=e.target.closest("[data-detect-city]");if(detectCity){detectCurrentCity(detectCity);return}
       const city=e.target.closest("[data-city-choice]");if(city){selectCity(city.dataset.cityChoice);closeModal();toast(`Город поиска: ${city.dataset.cityChoice}`);return}
       const scenario=e.target.closest("[data-scenario]");if(scenario){E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.toggle("active",b===scenario));E.spaceType.value=scenario.dataset.scenario;renderCatalog(scenario.dataset.scenario);document.getElementById("catalog").scrollIntoView({behavior:"smooth"});return}
