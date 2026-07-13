@@ -182,10 +182,27 @@ paths:
               required: [login, password]
               properties:
                 login: {type: string}
-                password: {type: string, minLength: 8}
+                password: {type: string, minLength: 1}
       responses:
         '200':
           description: Authenticated session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshSession
+      description: Rotates the HttpOnly refresh cookie and returns a new access token.
+      security:
+        - refreshCookie: []
+      responses:
+        '200':
+          description: Session refreshed and refresh cookie rotated
           content:
             application/json:
               schema:
@@ -199,6 +216,7 @@ paths:
       operationId: logout
       security:
         - bearerAuth: []
+        - refreshCookie: []
       responses:
         '204': {description: Session revoked}
 
@@ -573,6 +591,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: rooms_refresh
 
   parameters:
     RoomId:
@@ -646,7 +668,7 @@ components:
 
     User:
       type: object
-      required: [id, role, name]
+      required: [id, role, name, passwordResetRequired]
       properties:
         id: {type: string, format: uuid}
         role: {type: string, enum: [client, partner, admin, accountant]}
@@ -654,6 +676,7 @@ components:
         email: {type: [string, 'null'], format: email}
         phone: {type: [string, 'null']}
         city: {type: [string, 'null']}
+        passwordResetRequired: {type: boolean}
 
     AuthSession:
       type: object

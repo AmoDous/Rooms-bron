@@ -1082,11 +1082,37 @@
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
     const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname);
-    const apiState={base:apiQuery==="local"||localPreview?"http://127.0.0.1:3000":"",connected:false,storage:"",reviews:new Map()};
-    async function apiJson(path){
+    const apiState={base:apiQuery==="local"||localPreview?"http://127.0.0.1:3000":"",connected:false,storage:"",reviews:new Map(),accessToken:""};
+    async function apiRequest(path,{method="GET",body,auth=false}={}){
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3500);
-      try{const response=await fetch(`${apiState.base}${path}`,{headers:{Accept:"application/json"},signal:controller.signal});if(!response.ok)throw new Error(`Rooms API ${response.status}`);return response.json()}
+      const headers={Accept:"application/json"};
+      if(body!==undefined)headers["Content-Type"]="application/json";
+      if(auth&&apiState.accessToken)headers.Authorization=`Bearer ${apiState.accessToken}`;
+      try{
+        const response=await fetch(`${apiState.base}${path}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),credentials:"include",signal:controller.signal});
+        const payload=response.status===204?null:await response.json().catch(()=>null);
+        if(!response.ok){const error=new Error(payload?.message||`Rooms API ${response.status}`);error.status=response.status;error.code=payload?.code||"API_ERROR";throw error}
+        return payload;
+      }
       finally{clearTimeout(timer)}
+    }
+    function apiJson(path){return apiRequest(path)}
+    function syncApiUser(user){
+      const account={id:user.id,role:user.role,name:user.name,email:user.email||"",phone:phone(user.phone),city:user.city||state.city,passwordResetRequired:Boolean(user.passwordResetRequired),api:true,lastActiveAt:new Date().toISOString()};
+      const next=accounts().filter(item=>item.id!==account.id&&String(item.email||"").toLowerCase()!==String(account.email||"").toLowerCase()&&phone(item.phone)!==account.phone);
+      write(store.accounts,[...next,account]);write(store.session,{id:account.id,source:"api"});
+      if(account.city)selectCity(account.city,false,false);
+      return account;
+    }
+    function acceptApiSession(payload){apiState.accessToken=payload.accessToken||"";return syncApiUser(payload.user)}
+    async function restoreApiSession(){
+      const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null;
+      if(!session||(!session.source&&!account?.api))return null;
+      try{return acceptApiSession(await apiRequest("/v1/auth/refresh",{method:"POST"}))}
+      catch(error){
+        if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(account?.api)write(store.accounts,accounts().filter(item=>item.id!==account.id))}
+        return null;
+      }
     }
     function mergeApiVenue(data,cover){
       let item=venues.find(v=>v.id===data.slug);
@@ -1110,7 +1136,7 @@
         summaries.forEach((room,index)=>mergeApiRoom(room,details[index]));
         const reviewPages=await Promise.all(summaries.map(room=>apiJson(`/v1/rooms/${encodeURIComponent(room.slug)}/reviews`).catch(()=>({items:[]}))));
         summaries.forEach((room,index)=>apiState.reviews.set(room.slug,(reviewPages[index]?.items||[]).map(review=>({id:`API-${review.id}`,room:room.slug,name:review.authorName,rating:Number(review.rating)||0,date:new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(new Date(review.publishedAt)),text:review.body||"",reply:review.partnerReply||"",status:"published",seed:true,server:true}))));
-        apiState.connected=true;apiState.storage=health.storage||"unknown";document.documentElement.dataset.api="connected";hydrate();
+        apiState.connected=true;apiState.storage=health.storage||"unknown";document.documentElement.dataset.api="connected";await restoreApiSession();hydrate();
         console.info(`Rooms: каталог подключён к API (${apiState.storage}).`);
       }catch(error){document.documentElement.dataset.api="fallback";console.info("Rooms: API недоступен, используется встроенный каталог.",error)}
     }
@@ -3142,6 +3168,8 @@
     function renderAuth(mode="login",prefill=""){
       const reg=mode==="register";
       openModal(`<span class="kicker">Личный кабинет</span><h2 style="margin:0">${reg?"Регистрация":"Войти"}</h2><div class="auth-tabs"><button class="btn ${!reg?"active":""}" data-auth="login" type="button">Войти</button><button class="btn ${reg?"active":""}" data-auth="register" type="button">Регистрация</button></div>${reg?`<form id="registerForm"><div class="form"><div class="field"><label>Имя</label><input name="name" required></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" placeholder="+7..." required></div><div class="field"><label>Город поиска</label><select name="city">${cities.map(c=>`<option ${c===state.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="city-proof" data-city-proof="client" aria-live="polite">${cityProofHtml(state.city,"client")}</div><div class="field full"><label>Пароль</label><input name="password" type="password" minlength="4" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Зарегистрироваться</button></div></form>`:`<form id="loginForm"><div class="form"><div class="field full"><label>Email или телефон</label><input name="login" value="${esc(prefill)}" autocomplete="username" placeholder="mail@example.com или +7..." required></div><div class="field full"><label>Пароль</label><input name="password" type="password" autocomplete="current-password" placeholder="Введите пароль" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Войти</button></div></form>`}<div class="captcha"><input type="checkbox" checked><div><strong>Я не робот</strong><div class="muted">Демо-проверка перед входом</div></div></div><p class="auth-copy">При входе или регистрации вы принимаете пользовательское соглашение, политику конфиденциальности и согласие на обработку персональных данных.</p><button class="btn soft" data-partner-login type="button">Вход для партнёров</button>`,true);
+      const registrationPassword=E.modalContent.querySelector('#registerForm [name="password"]');
+      if(registrationPassword){registrationPassword.minLength=8;registrationPassword.autocomplete="new-password"}
     }
     function bookingFlow(status){
       const steps=[["pending","заявка"],["proposed","вариант"],["awaiting_payment","предоплата"],["paid","оплачена"],["visited","посещение"]],current=status==="completed"?"visited":status==="confirmed"?"awaiting_payment":status;
@@ -3907,12 +3935,22 @@
       toast("Спасибо, отзыв отправлен на модерацию.");
       renderSpace(r.id,true);
     }
-    function login(form){
+    async function login(form){
       if(isAdminLogin(form.login.value,form.password.value)){
         const acc=ensureAdminAccount();write(store.session,{id:acc.id});hydrate();renderAdminDashboard();toast("Вы вошли в админку Rooms.");return;
       }
       if(isAccountantLogin(form.login.value,form.password.value)){
         const acc=ensureAccountantAccount();write(store.session,{id:acc.id});hydrate();renderAccountantDashboard();toast("Вы вошли в бухгалтерию Rooms.");return;
+      }
+      if(apiState.connected){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const acc=acceptApiSession(await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}));
+          if(pending){saveBooking(pending);closeModal()}else renderProfile();
+          hydrate();showPendingUserNotice();toast(`С возвращением, ${acc.name}.`);
+        }catch(error){toast(error.message||"Не удалось войти. Повторите попытку.")}
+        finally{if(submit)submit.disabled=false}
+        return;
       }
       const acc=findAccount(form.login.value);
       if(!acc)return toast("Кабинет не найден. Зарегистрируйтесь.");
@@ -3923,11 +3961,27 @@
       hydrate();
       showPendingUserNotice();
     }
-    function register(form){
+    async function register(form){
       const fd=new FormData(form),ph=phone(fd.get("phone"));
+      if(apiState.connected){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const acceptedAt=new Date().toISOString();
+          const acc=acceptApiSession(await apiRequest("/v1/auth/client/register",{method:"POST",body:{name:String(fd.get("name")||"").trim(),email:String(fd.get("email")||"").trim(),phone:String(fd.get("phone")||"").trim(),city:String(fd.get("city")||"").trim(),password:String(fd.get("password")||""),legal:{termsVersion:legalVersion,privacyVersion:legalVersion,acceptedAt}}}));
+          if(pending){saveBooking(pending);closeModal()}else renderProfile();
+          hydrate();toast(`Кабинет создан, ${acc.name}.`);
+        }catch(error){toast(error.message||"Не удалось создать кабинет. Повторите попытку.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       if(findAccount(fd.get("email"))||findAccount(ph))return toast("Кабинет с такой почтой или телефоном уже есть.");
       const createdAt=new Date().toISOString(),acc={id:`U-${Date.now()}`,name:fd.get("name"),email:fd.get("email"),phone:ph,city:fd.get("city"),password:fd.get("password"),createdAt,lastActiveAt:createdAt};
       write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});recordConsent({subjectId:acc.id,phone:acc.phone,email:acc.email,context:"registration",documents:["terms","privacy"]});selectCity(acc.city,false,false);renderProfile();hydrate();toast("Кабинет создан.");
+    }
+    async function logoutClient(){
+      const acc=current();
+      if(acc?.api&&apiState.connected){try{await apiRequest("/v1/auth/logout",{method:"POST",auth:true})}catch(error){console.info("Rooms: серверный выход завершён локально.",error)}}
+      apiState.accessToken="";localStorage.removeItem(store.session);hydrate();closeModal();toast("Вы вышли.");
     }
     function savePersonalData(form){
       const acc=current();if(!acc)return renderAuth();
@@ -4100,7 +4154,7 @@
       const reminderBooking=e.target.closest("[data-reminder-booking]");if(reminderBooking){openPartnerNoticeBooking(reminderBooking.dataset.reminderBooking);return}
       if(e.target.closest("[data-partner-login]")){openPartner();return}
       const partnerSite=e.target.closest("[data-partner-site]");if(partnerSite){leavePartnerWorkspace(partnerSite.dataset.partnerSite||"");return}
-      if(e.target.closest("[data-logout]")){localStorage.removeItem(store.session);hydrate();closeModal();toast("Вы вышли.")}
+      if(e.target.closest("[data-logout]")){void logoutClient()}
       if(e.target.closest("[data-partner-logout]")){localStorage.removeItem(store.partnerAuth);updateNoticeBadge();leavePartnerWorkspace();toast("Вы вышли из кабинета партнёра.");return}
       if(e.target.closest("[data-close-modal]"))requestCloseModal();
     });

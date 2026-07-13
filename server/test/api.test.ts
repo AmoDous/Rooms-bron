@@ -44,6 +44,80 @@ test("cities include pilot Voronezh and Moscow", async () => {
   assert.ok(cities.some((city: { name: string }) => city.name === "Москва"));
 });
 
+test("client auth keeps passwords private and revokes a logged-out session", async () => {
+  const registration = {
+    name: "Тестовый клиент",
+    email: "client.auth@rooms.test",
+    phone: "+7 900 111-22-33",
+    city: "Воронеж",
+    password: "rooms-test-2026",
+    legal: {
+      termsVersion: "test-1",
+      privacyVersion: "test-1",
+      acceptedAt: new Date().toISOString(),
+    },
+  };
+  const created = await app.inject({ method: "POST", url: "/v1/auth/client/register", payload: registration });
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.json().user.email, registration.email);
+  assert.equal(created.json().user.phone, "+79001112233");
+  assert.equal("password" in created.json().user, false);
+  assert.equal("passwordHash" in created.json().user, false);
+  assert.match(String(created.headers["set-cookie"]), /rooms_refresh=.*HttpOnly/);
+
+  const duplicate = await app.inject({ method: "POST", url: "/v1/auth/client/register", payload: registration });
+  assert.equal(duplicate.statusCode, 409);
+  assert.equal(duplicate.json().code, "ACCOUNT_EXISTS");
+
+  const wrong = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: registration.email, password: "wrong-password" },
+  });
+  assert.equal(wrong.statusCode, 401);
+  assert.equal(wrong.json().code, "INVALID_CREDENTIALS");
+
+  const login = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "+7 900 111-22-33", password: registration.password },
+  });
+  assert.equal(login.statusCode, 200);
+  const accessToken = login.json().accessToken;
+  const cookie = String(login.headers["set-cookie"]).split(";")[0];
+  assert.ok(accessToken);
+
+  const me = await app.inject({ method: "GET", url: "/v1/me", headers: { authorization: `Bearer ${accessToken}` } });
+  assert.equal(me.statusCode, 200);
+  assert.equal(me.json().name, registration.name);
+
+  const refresh = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { cookie } });
+  assert.equal(refresh.statusCode, 200);
+  const refreshedAccessToken = refresh.json().accessToken;
+  const refreshedCookie = String(refresh.headers["set-cookie"]).split(";")[0];
+  assert.ok(refreshedAccessToken);
+  assert.notEqual(refreshedCookie, cookie);
+  const supersededAccess = await app.inject({ method: "GET", url: "/v1/me", headers: { authorization: `Bearer ${accessToken}` } });
+  assert.equal(supersededAccess.statusCode, 401);
+  const replayedRefresh = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { cookie } });
+  assert.equal(replayedRefresh.statusCode, 401);
+
+  const logout = await app.inject({
+    method: "POST",
+    url: "/v1/auth/logout",
+    headers: { authorization: `Bearer ${refreshedAccessToken}`, cookie: refreshedCookie },
+  });
+  assert.equal(logout.statusCode, 204);
+  assert.match(String(logout.headers["set-cookie"]), /Max-Age=0/);
+
+  const revoked = await app.inject({ method: "GET", url: "/v1/me", headers: { authorization: `Bearer ${refreshedAccessToken}` } });
+  assert.equal(revoked.statusCode, 401);
+  const expiredRefresh = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { cookie: refreshedCookie } });
+  assert.equal(expiredRefresh.statusCode, 401);
+  const malformedRefresh = await app.inject({ method: "POST", url: "/v1/auth/refresh", headers: { cookie: "rooms_refresh=%E0%A4%A" } });
+  assert.equal(malformedRefresh.statusCode, 401);
+});
+
 test("city stats expose exact supply and bucket the public audience", async () => {
   const launching = await app.inject({ method: "GET", url: "/v1/cities/воронеж/stats" });
   assert.equal(launching.statusCode, 200);

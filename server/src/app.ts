@@ -1,8 +1,9 @@
 import cors from "@fastify/cors";
-import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AuthConflictError, AuthService, MemoryAuthRepository, normalizeRussianPhone, type AuthRepository, type IssuedAuthSession } from "./auth.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import type {
@@ -20,6 +21,9 @@ interface AppConfig {
   corsOrigins: string[];
   logger: boolean;
   repository: CatalogRepository;
+  authRepository: AuthRepository;
+  authTokenSecret: string;
+  secureCookies: boolean;
 }
 
 interface SearchQuery {
@@ -54,6 +58,24 @@ interface AvailabilityBody {
   guests?: number;
 }
 
+interface ClientRegistrationBody {
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  password: string;
+  legal: {
+    termsVersion: string;
+    privacyVersion: string;
+    acceptedAt: string;
+  };
+}
+
+interface LoginBody {
+  login: string;
+  password: string;
+}
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const assetContentTypes: Readonly<Record<string, string>> = {
   jpg: "image/jpeg",
@@ -72,6 +94,59 @@ class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+class AuthAttemptLimiter {
+  private readonly entries = new Map<string, { failures: number; resetAt: number }>();
+
+  blocked(key: string): boolean {
+    const entry = this.entries.get(key);
+    if (!entry || entry.resetAt <= Date.now()) {
+      this.entries.delete(key);
+      return false;
+    }
+    return entry.failures >= 5;
+  }
+
+  fail(key: string): void {
+    const current = this.entries.get(key);
+    this.entries.set(key, current && current.resetAt > Date.now()
+      ? { ...current, failures: current.failures + 1 }
+      : { failures: 1, resetAt: Date.now() + 10 * 60 * 1000 });
+  }
+
+  clear(key: string): void {
+    this.entries.delete(key);
+  }
+}
+
+function email(value: string): string | null {
+  const normalized = value.trim().toLocaleLowerCase("ru-RU");
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized) ? normalized : null;
+}
+
+function cookieValue(header: string | undefined, name: string): string | null {
+  const item = String(header ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  if (!item) return null;
+  try {
+    return decodeURIComponent(item.slice(name.length + 1));
+  } catch {
+    return null;
+  }
+}
+
+function refreshCookie(reply: FastifyReply, token: string, maxAge: number, secure: boolean): void {
+  const security = secure ? "; Secure" : "";
+  reply.header("Set-Cookie", `rooms_refresh=${encodeURIComponent(token)}; Path=/v1/auth; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${security}`);
+}
+
+function clearRefreshCookie(reply: FastifyReply, secure: boolean): void {
+  const security = secure ? "; Secure" : "";
+  reply.header("Set-Cookie", `rooms_refresh=; Path=/v1/auth; HttpOnly; SameSite=Lax; Max-Age=0${security}`);
+}
+
+function authResponse(session: IssuedAuthSession) {
+  return { user: session.user, accessToken: session.accessToken, expiresIn: session.expiresIn };
 }
 
 function photoUrl(baseUrl: string, path: string): string {
@@ -143,23 +218,35 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
     logger: overrides.logger ?? false,
     repository: overrides.repository ?? new MemoryCatalogRepository(),
+    authRepository: overrides.authRepository ?? new MemoryAuthRepository(),
+    authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
+    secureCookies: overrides.secureCookies ?? false,
   };
   const app = Fastify({ logger: config.logger });
+  const auth = new AuthService(config.authRepository, config.authTokenSecret);
+  const authAttempts = new AuthAttemptLimiter();
 
   void app.register(cors, {
     origin: config.corsOrigins,
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "PATCH", "OPTIONS"],
+    credentials: true,
   });
 
   app.setErrorHandler((error: FastifyError | ApiError, request, reply) => {
     if (error instanceof ApiError) {
       return reply.status(error.statusCode).send({ ...errorPayload(error.code, error.message, error.details), requestId: request.id });
     }
+    if (error instanceof AuthConflictError) {
+      return reply.status(409).send({ ...errorPayload("ACCOUNT_EXISTS", "Кабинет с такой почтой или телефоном уже существует."), requestId: request.id });
+    }
     if ("validation" in error && error.validation) {
       return reply.status(400).send({
         ...errorPayload("VALIDATION_ERROR", "Проверьте параметры запроса.", error.validation),
         requestId: request.id,
       });
+    }
+    if (typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 500) {
+      return reply.status(error.statusCode).send({ ...errorPayload(error.code ?? "REQUEST_ERROR", error.message), requestId: request.id });
     }
     request.log.error(error);
     return reply.status(500).send({ ...errorPayload("INTERNAL_ERROR", "Не удалось обработать запрос."), requestId: request.id });
@@ -196,6 +283,105 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   }));
 
   app.get("/v1/cities", async () => config.repository.listCities());
+
+  app.post<{ Body: ClientRegistrationBody }>("/v1/auth/client/register", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "email", "phone", "city", "password", "legal"],
+        properties: {
+          name: { type: "string", minLength: 2, maxLength: 100 },
+          email: { type: "string", minLength: 5, maxLength: 254 },
+          phone: { type: "string", minLength: 10, maxLength: 30 },
+          city: { type: "string", minLength: 2, maxLength: 100 },
+          password: { type: "string", minLength: 8, maxLength: 128 },
+          legal: {
+            type: "object",
+            additionalProperties: false,
+            required: ["termsVersion", "privacyVersion", "acceptedAt"],
+            properties: {
+              termsVersion: { type: "string", minLength: 1, maxLength: 100 },
+              privacyVersion: { type: "string", minLength: 1, maxLength: 100 },
+              acceptedAt: { type: "string", minLength: 20, maxLength: 40 },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const body = request.body;
+    const normalizedEmail = email(body.email);
+    const normalizedPhone = normalizeRussianPhone(body.phone);
+    const acceptedAt = new Date(body.legal.acceptedAt);
+    if (!normalizedEmail) throw new ApiError(400, "INVALID_EMAIL", "Проверьте электронную почту.");
+    if (!normalizedPhone) throw new ApiError(400, "INVALID_PHONE", "Укажите российский номер телефона.");
+    if (!Number.isFinite(acceptedAt.getTime()) || acceptedAt.getTime() > Date.now() + 5 * 60 * 1000) {
+      throw new ApiError(400, "INVALID_CONSENT_DATE", "Не удалось подтвердить дату согласия.");
+    }
+    const session = await auth.register({
+      name: body.name.trim(),
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      city: body.city.trim(),
+      password: body.password,
+      legal: { ...body.legal, acceptedAt: acceptedAt.toISOString() },
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null,
+    });
+    refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
+    return reply.code(201).send(authResponse(session));
+  });
+
+  app.post<{ Body: LoginBody }>("/v1/auth/login", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["login", "password"],
+        properties: {
+          login: { type: "string", minLength: 3, maxLength: 254 },
+          password: { type: "string", minLength: 1, maxLength: 128 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const login = request.body.login.trim();
+    const attemptKey = `${request.ip}|${login.toLocaleLowerCase("ru-RU")}`;
+    if (authAttempts.blocked(attemptKey)) throw new ApiError(429, "LOGIN_RATE_LIMITED", "Слишком много попыток. Повторите вход через 10 минут.");
+    const session = await auth.login(login, request.body.password, request.ip, request.headers["user-agent"] ?? null);
+    if (!session) {
+      authAttempts.fail(attemptKey);
+      throw new ApiError(401, "INVALID_CREDENTIALS", "Неверная почта, телефон или пароль.");
+    }
+    authAttempts.clear(attemptKey);
+    refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
+    return authResponse(session);
+  });
+
+  app.post("/v1/auth/refresh", async (request, reply) => {
+    const token = cookieValue(request.headers.cookie, "rooms_refresh");
+    const session = token ? await auth.refresh(token, request.ip, request.headers["user-agent"] ?? null) : null;
+    if (!session) {
+      clearRefreshCookie(reply, config.secureCookies);
+      throw new ApiError(401, "SESSION_EXPIRED", "Сессия завершена. Войдите снова.");
+    }
+    refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
+    return authResponse(session);
+  });
+
+  app.post("/v1/auth/logout", async (request, reply) => {
+    const token = cookieValue(request.headers.cookie, "rooms_refresh");
+    await auth.logout(request.headers.authorization, token);
+    clearRefreshCookie(reply, config.secureCookies);
+    return reply.code(204).send();
+  });
+
+  app.get("/v1/me", async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    return current.user;
+  });
 
   app.get<{ Params: CityParams }>("/v1/cities/:cityId/stats", {
     schema: {

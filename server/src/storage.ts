@@ -1,9 +1,11 @@
 import { Pool, type PoolConfig } from "pg";
+import { MemoryAuthRepository, PostgresAuthRepository, type AuthRepository } from "./auth.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { PostgresCatalogRepository } from "./postgresCatalog.js";
 
 export interface CatalogStorage {
   repository: CatalogRepository;
+  authRepository: AuthRepository;
   close(): Promise<void>;
 }
 
@@ -36,7 +38,11 @@ export function postgresPoolConfig(env: NodeJS.ProcessEnv = process.env): PoolCo
 export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env): Promise<CatalogStorage> {
   const connectionString = env.DATABASE_URL?.trim();
   if (!connectionString) {
-    return { repository: new MemoryCatalogRepository(), close: async () => undefined };
+    return {
+      repository: new MemoryCatalogRepository(),
+      authRepository: new MemoryAuthRepository(),
+      close: async () => undefined,
+    };
   }
   const pool = new Pool(postgresPoolConfig(env));
   try {
@@ -45,5 +51,9 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     await pool.end();
     throw new Error("Rooms could not connect to PostgreSQL using DATABASE_URL.", { cause: error });
   }
-  return { repository: new PostgresCatalogRepository(pool), close: () => pool.end() };
+  return {
+    repository: new PostgresCatalogRepository(pool),
+    authRepository: new PostgresAuthRepository(pool),
+    close: () => pool.end(),
+  };
 }
