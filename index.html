@@ -447,6 +447,7 @@
     .chat-message time{display:block;margin-top:5px;color:var(--muted);font-size:10px}
     .chat-guard{margin-top:12px;border:1px solid #efd29b;border-radius:14px;background:#fff7e8;padding:10px 12px;color:#74521d;font-size:12px;line-height:1.45}
     .chat-guard.open{border-color:#cde0d4;background:#edf7f0;color:#35634a}
+    .city-proof{grid-column:1/-1;display:flex;align-items:flex-start;gap:10px;border:1px solid #e9d5ce;border-radius:14px;background:var(--paper-2);padding:12px 13px}.city-proof-mark{display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;border-radius:10px;background:var(--green);color:#fff;font-weight:900}.city-proof strong{display:block;font-size:13px;line-height:1.35}.city-proof>span:last-child>span{display:block;margin-top:3px;color:var(--muted);font-size:11px;line-height:1.45}
     .chat-compose{margin-top:12px}
     .chat-compose textarea{min-height:86px}
     .chat-error{min-height:18px;margin:5px 0 0;color:#a44335;font-size:12px;font-weight:800}
@@ -588,6 +589,7 @@
     .analytics-table{display:grid;gap:0;width:100%;min-width:0;max-width:100%;margin-top:8px;overflow-x:auto}
     .analytics-row{display:grid;grid-template-columns:minmax(120px,1.4fr) repeat(4,minmax(58px,.65fr));gap:7px;align-items:center;padding:9px 0;border-top:1px solid var(--line);font-size:12px}
     .analytics-row:first-child{border-top:0}.analytics-row strong{font-size:13px}.analytics-row span:not(:first-child){text-align:right}
+    .city-stats-table{overflow-x:auto}.city-stat-row{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(5,minmax(76px,.65fr));gap:8px;align-items:center;min-width:720px;padding:10px 0;border-top:1px solid var(--line);font-size:12px}.city-stat-row:first-child{border-top:0}.city-stat-row.header{color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.city-stat-row>span:not(:first-child){text-align:right}.city-stat-row strong{display:block;font-size:13px}.city-stat-row small{display:block;margin-top:3px;color:var(--muted);line-height:1.35}
     .admin-list{display:grid;gap:10px}
     .admin-item{border:1px solid var(--line);border-radius:16px;background:#fff;padding:12px}
     .admin-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -1004,6 +1006,7 @@
         <form class="panel" id="partnerForm">
           <div class="form">
             <div class="field"><label for="partnerCity">Город</label><input id="partnerCity" required value="Воронеж"></div>
+            <div class="city-proof" data-city-proof="partner" aria-live="polite"></div>
             <div class="field"><label for="partnerVenue">Название заведения</label><input id="partnerVenue" required placeholder="Например, Kids Loft"></div>
             <div class="field full"><label for="partnerAddress">Адрес</label><input id="partnerAddress" required></div>
             <div class="field"><label for="partnerName">Контактное лицо</label><input id="partnerName" required></div>
@@ -1226,6 +1229,33 @@
     function intervalText(a,b){return `${hourLabel(a)}-${hourLabel(b)}${Number(b)>24||Number(a)>=24?" +1 день":""}`}
     function venue(r){return venues.find(v=>v.id===r.venue)}
     function accounts(){return read(store.accounts,[])}
+    function normalizeCityName(value){return String(value||"").trim().replace(/\s+/g," ")}
+    function pluralRu(value,forms){const n=Math.abs(Number(value)||0)%100,last=n%10;return forms[n>10&&n<20?2:last===1?0:last>=2&&last<=4?1:2]}
+    function audienceBucket(value){const n=Math.max(0,Number(value)||0),step=[1000,500,200,100,50,20].find(x=>n>=x);return step?`${step.toLocaleString("ru-RU")}+`:""}
+    function registeredClients(){
+      const seen=new Set();return accounts().filter(acc=>{
+        if(["admin","accountant"].includes(acc.role)||acc.blockedAt)return false;
+        const key=phone(acc.phone)||String(acc.email||"").trim().toLowerCase()||acc.id;if(seen.has(key))return false;seen.add(key);return true;
+      });
+    }
+    function localCityStats(value){
+      const city=normalizeCityName(value),key=city.toLocaleLowerCase("ru-RU"),cityVenues=venues.filter(v=>normalizeCityName(v.city).toLocaleLowerCase("ru-RU")===key&&isVenuePublished(v)),venueIds=new Set(cityVenues.map(v=>v.id)),cityRooms=rooms.filter(r=>venueIds.has(r.venue)&&isRoomPublic(r)),clients=registeredClients().filter(acc=>normalizeCityName(acc.city).toLocaleLowerCase("ru-RU")===key),cutoff=Date.now()-90*86400000,active=clients.filter(acc=>{const stamp=Date.parse(acc.lastActiveAt||acc.createdAt||"");return !Number.isFinite(stamp)||stamp>=cutoff}),leads=adminLeads().filter(lead=>normalizeCityName(lead.city).toLocaleLowerCase("ru-RU")===key&&!['approved','rejected'].includes(lead.status));
+      return {city,clients:clients.length,activeClients:active.length,publishedVenues:cityVenues.length,publishedRooms:cityRooms.length,reviewVenues:leads.length,venueNames:cityVenues.map(v=>v.title)};
+    }
+    function cityProofHtml(value,audience="client"){
+      const stats=localCityStats(value),city=stats.city||"вашем городе",mark=audience==="partner"?"+":"R";
+      if(audience==="partner"){
+        const bucket=audienceBucket(stats.activeClients);
+        return `<span class="city-proof-mark">${mark}</span><span><strong>${bucket?`В городе ${esc(city)} Rooms уже пользуются ${bucket} активных клиентов`:`Rooms начинает работу в городе ${esc(city)}`}</strong><span>${bucket?"Покажем вашу площадку людям, которые ищут помещение для события.":"Подключитесь одним из первых: карточка появится в каталоге после проверки."}</span></span>`;
+      }
+      const supply=stats.publishedVenues?`${stats.publishedVenues} ${pluralRu(stats.publishedVenues,["заведение","заведения","заведений"])} и ${stats.publishedRooms} ${pluralRu(stats.publishedRooms,["помещение","помещения","помещений"])}`:"каталог пока формируется";
+      return `<span class="city-proof-mark">${mark}</span><span><strong>В городе ${esc(city)} ${supply}</strong><span>${stats.publishedVenues?"После регистрации сохраним город и будем показывать подходящие варианты.":"Сообщим, когда в городе появятся первые площадки."}</span></span>`;
+    }
+    function updateCityProof(audience,value,root=document){const node=root.querySelector?.(`[data-city-proof="${audience}"]`);if(node)node.innerHTML=cityProofHtml(value,audience)}
+    function adminCityStatsPanel(){
+      const names=[...new Set([...cities,...venues.map(v=>normalizeCityName(v.city)),...registeredClients().map(a=>normalizeCityName(a.city)),...adminLeads().map(l=>normalizeCityName(l.city))].filter(Boolean))],rows=names.map(localCityStats).map(stats=>`<div class="city-stat-row"><span><strong>${esc(stats.city)}</strong><small>${esc(stats.venueNames.join(", ")||"Опубликованных площадок пока нет")}</small></span><span>${stats.clients}</span><span>${stats.activeClients}</span><span>${stats.publishedVenues}</span><span>${stats.publishedRooms}</span><span>${stats.reviewVenues}</span></div>`).join("");
+      return `<section class="admin-panel"><div class="admin-item-head"><div><h3>Города и аудитория</h3><p class="muted" style="margin:0">Точные локальные показатели. Партнёрам аудитория показывается только ступенями 20+, 50+, 100+ и далее.</p></div><span class="status paid">${names.length} ${pluralRu(names.length,["город","города","городов"])}</span></div><div class="city-stats-table"><div class="city-stat-row header"><span>Город</span><span>Клиенты</span><span>Активны 90 дн.</span><span>Площадки</span><span>Помещения</span><span>Модерация</span></div>${rows}</div></section>`;
+    }
     function current(){const s=read(store.session,null);return s?accounts().find(a=>a.id===s.id):null}
     function isAdmin(acc=current()){return acc?.role==="admin"}
     function isAccountant(acc=current()){return acc?.role==="accountant"}
@@ -3078,7 +3108,7 @@
     }
     function renderAuth(mode="login",prefill=""){
       const reg=mode==="register";
-      openModal(`<span class="kicker">Личный кабинет</span><h2 style="margin:0">${reg?"Регистрация":"Войти"}</h2><div class="auth-tabs"><button class="btn ${!reg?"active":""}" data-auth="login" type="button">Войти</button><button class="btn ${reg?"active":""}" data-auth="register" type="button">Регистрация</button></div>${reg?`<form id="registerForm"><div class="form"><div class="field"><label>Имя</label><input name="name" required></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" placeholder="+7..." required></div><div class="field"><label>Город поиска</label><select name="city">${cities.map(c=>`<option ${c===state.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="field full"><label>Пароль</label><input name="password" type="password" minlength="4" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Зарегистрироваться</button></div></form>`:`<form id="loginForm"><div class="form"><div class="field full"><label>Email или телефон</label><input name="login" value="${esc(prefill)}" autocomplete="username" placeholder="mail@example.com или +7..." required></div><div class="field full"><label>Пароль</label><input name="password" type="password" autocomplete="current-password" placeholder="Введите пароль" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Войти</button></div></form>`}<div class="captcha"><input type="checkbox" checked><div><strong>Я не робот</strong><div class="muted">Демо-проверка перед входом</div></div></div><p class="auth-copy">При входе или регистрации вы принимаете пользовательское соглашение, политику конфиденциальности и согласие на обработку персональных данных.</p><button class="btn soft" data-partner-login type="button">Вход для партнёров</button>`,true);
+      openModal(`<span class="kicker">Личный кабинет</span><h2 style="margin:0">${reg?"Регистрация":"Войти"}</h2><div class="auth-tabs"><button class="btn ${!reg?"active":""}" data-auth="login" type="button">Войти</button><button class="btn ${reg?"active":""}" data-auth="register" type="button">Регистрация</button></div>${reg?`<form id="registerForm"><div class="form"><div class="field"><label>Имя</label><input name="name" required></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" placeholder="+7..." required></div><div class="field"><label>Город поиска</label><select name="city">${cities.map(c=>`<option ${c===state.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="city-proof" data-city-proof="client" aria-live="polite">${cityProofHtml(state.city,"client")}</div><div class="field full"><label>Пароль</label><input name="password" type="password" minlength="4" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Зарегистрироваться</button></div></form>`:`<form id="loginForm"><div class="form"><div class="field full"><label>Email или телефон</label><input name="login" value="${esc(prefill)}" autocomplete="username" placeholder="mail@example.com или +7..." required></div><div class="field full"><label>Пароль</label><input name="password" type="password" autocomplete="current-password" placeholder="Введите пароль" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Войти</button></div></form>`}<div class="captcha"><input type="checkbox" checked><div><strong>Я не робот</strong><div class="muted">Демо-проверка перед входом</div></div></div><p class="auth-copy">При входе или регистрации вы принимаете пользовательское соглашение, политику конфиденциальности и согласие на обработку персональных данных.</p><button class="btn soft" data-partner-login type="button">Вход для партнёров</button>`,true);
     }
     function bookingFlow(status){
       const steps=[["pending","заявка"],["proposed","вариант"],["awaiting_payment","предоплата"],["paid","оплачена"],["visited","посещение"]],current=status==="completed"?"visited":status==="confirmed"?"awaiting_payment":status;
@@ -3240,6 +3270,7 @@
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(adminFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(adminFinance.extras)}</strong></div><div class="dash-card"><span class="muted">Заявки с допами</span><strong>${adminFinance.withServices}</strong></div></div>
         <div class="chips"><button class="btn soft" data-admin-notifications type="button">Уведомления${adminUnread?` · ${adminUnread}`:""}</button><button class="btn soft" data-notification-settings="admin" type="button">Каналы связи</button><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
         ${adminAnalyticsPanel(books)}
+        ${adminCityStatsPanel()}
         ${adminReminderPanel(books)}
         ${notificationDeliveryPanel()}
         ${adminManualBookingsPanel(partnerData())}
@@ -3827,7 +3858,7 @@
       const ex=findAccount(ph),cur=current();
       if(ex&&!cur){pending=b;renderAuth("login",ph);toast("Кабинет с таким телефоном уже есть. Войдите, чтобы отправить заявку.");return}
       if(ex&&cur&&ex.id!==cur.id){pending=b;renderAuth("login",ph);toast("Войдите в кабинет, к которому привязан этот телефон.");return}
-      if(!ex&&!cur){const acc={id:`U-${Date.now()}`,name:b.name,email:"",phone:ph,city:v.city,password:"",basic:true};write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});selectCity(acc.city,false,false);hydrate()}
+      if(!ex&&!cur){const createdAt=new Date().toISOString(),acc={id:`U-${Date.now()}`,name:b.name,email:"",phone:ph,city:v.city,password:"",basic:true,createdAt,lastActiveAt:createdAt};write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});selectCity(acc.city,false,false);hydrate()}
       saveBooking(b);closeModal();hydrate();
     }
     function submitReview(form){
@@ -3853,7 +3884,7 @@
       const acc=findAccount(form.login.value);
       if(!acc)return toast("Кабинет не найден. Зарегистрируйтесь.");
       if(acc.password&&acc.password!==form.password.value)return toast("Пароль не подходит.");
-      write(store.session,{id:acc.id});
+      write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,lastActiveAt:new Date().toISOString()}:item));write(store.session,{id:acc.id});
       selectCity(acc.city||state.city,false,false);
       if(pending){saveBooking(pending);closeModal()}else renderProfile();
       hydrate();
@@ -3862,7 +3893,7 @@
     function register(form){
       const fd=new FormData(form),ph=phone(fd.get("phone"));
       if(findAccount(fd.get("email"))||findAccount(ph))return toast("Кабинет с такой почтой или телефоном уже есть.");
-      const acc={id:`U-${Date.now()}`,name:fd.get("name"),email:fd.get("email"),phone:ph,city:fd.get("city"),password:fd.get("password")};
+      const createdAt=new Date().toISOString(),acc={id:`U-${Date.now()}`,name:fd.get("name"),email:fd.get("email"),phone:ph,city:fd.get("city"),password:fd.get("password"),createdAt,lastActiveAt:createdAt};
       write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});recordConsent({subjectId:acc.id,phone:acc.phone,email:acc.email,context:"registration",documents:["terms","privacy"]});selectCity(acc.city,false,false);renderProfile();hydrate();toast("Кабинет создан.");
     }
     function savePersonalData(form){
@@ -3875,7 +3906,7 @@
       if(nextPassword&&nextPassword.length<4)return toast("Новый пароль должен быть не короче четырёх символов.");
       const duplicate=accounts().find(a=>a.id!==acc.id&&(phone(a.phone)===ph||String(a.email||"").trim().toLowerCase()===email));
       if(duplicate)return toast("Эта почта или телефон уже используются в другом кабинете.");
-      const updated={...acc,name,email,phone:ph,city,password:nextPassword||acc.password,basic:false};
+      const updated={...acc,name,email,phone:ph,city,password:nextPassword||acc.password,basic:false,lastActiveAt:new Date().toISOString()};
       write(store.accounts,accounts().map(a=>a.id===acc.id?updated:a));
       const list=read(store.bookings,[]);
       if(list.length)write(store.bookings,list.map(b=>phone(b.phone)===phone(acc.phone)?{...b,phone:ph,name}:b));
@@ -3892,12 +3923,13 @@
       if(partnerAccountByLogin(email)||existingLead)return toast("Заявка или кабинет с таким email уже существует.");
       const lead={id:`P-${Date.now().toString().slice(-6)}`,city:$("partnerCity").value,venue:$("partnerVenue").value,address:$("partnerAddress").value,name:$("partnerName").value,phone:$("partnerPhone").value,email,type:$("partnerType").value,rooms:Number($("partnerRooms").value)||1,comment:$("partnerComment").value,status:"new",created:new Date().toISOString()};
       write(store.partner,[lead,...read(store.partner,[])]);recordConsent({subjectId:lead.id,phone:lead.phone,email:lead.email,context:"partner_lead",documents:["partner-terms","privacy"]});
-      logActivity("partner_lead","Новая заявка партнёра",`${lead.venue} · ${lead.city} · ${lead.rooms} помещений`);E.partnerStatus.textContent="Заявка отправлена";toast("Заявка отправлена. После проверки Rooms выдаст временный пароль.");E.partnerForm.reset();$("partnerCity").value=state.city;
+      logActivity("partner_lead","Новая заявка партнёра",`${lead.venue} · ${lead.city} · ${lead.rooms} помещений`);E.partnerStatus.textContent="Заявка отправлена";toast("Заявка отправлена. После проверки Rooms выдаст временный пароль.");E.partnerForm.reset();$("partnerCity").value=state.city;updateCityProof("partner",state.city);
     }
     function selectCity(city,render=true,syncAccount=true){
       const next=supportedCity(city)||"Воронеж";state.city=next;write(store.cityPreference,next);
-      const acc=current();if(syncAccount&&acc&&!isAdmin(acc)&&!isAccountant(acc)&&acc.city!==next)write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,city:next}:item));
+      const acc=current();if(syncAccount&&acc&&!isAdmin(acc)&&!isAccountant(acc))write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,city:next,lastActiveAt:new Date().toISOString()}:item));
       E.cityButton.textContent=next;E.heroCityLabel.textContent=`${next} · ${next==="Воронеж"?"пилотный запуск":"демо-режим"}`;E.searchCity.value=next;$("partnerCity").value=next;
+      updateCityProof("partner",next);
       if(render)renderCatalog();
     }
     function reset(){
@@ -3922,7 +3954,7 @@
       E.time.innerHTML=`<option value="" ${state.time?"":"selected"}>Любое время</option>`+times.map(t=>`<option value="${t}" ${t===state.time?"selected":""}>${t}</option>`).join("");
       E.date.min=today;E.date.value=state.date||today;syncDateDisplay();E.searchCity.value=state.city;E.spaceType.value=state.type;E.hours.value=String(state.hours);E.guests.value=state.guests;E.age.value=state.age;E.maxPrice.value=String(state.maxPrice||0);
       E.accountButton.textContent=current()?(isAdmin()?"Админка":isAccountant()?"Бухгалтерия":"Профиль"):"Войти";selectCity(state.city,false);syncAdult();syncFilterSummary();renderCatalog();
-      updateNoticeBadge();
+      updateNoticeBadge();updateCityProof("partner",state.city);
     }
 
     E.searchForm.addEventListener("submit",e=>{e.preventDefault();E.scenarioGrid.querySelectorAll(".scenario").forEach(b=>b.classList.remove("active"));renderCatalog();document.getElementById("catalog").scrollIntoView({behavior:"smooth"})});
@@ -3943,6 +3975,8 @@
     E.modalClose.addEventListener("click",requestCloseModal);
     E.modal.addEventListener("click",e=>{if(e.target===E.modal)requestCloseModal()});
     E.partnerForm.addEventListener("submit",submitPartnerLead);
+    document.addEventListener("input",e=>{if(e.target.id==="partnerCity")updateCityProof("partner",e.target.value)});
+    document.addEventListener("change",e=>{if(e.target.matches('#registerForm [name="city"]'))updateCityProof("client",e.target.value,E.modalContent)});
     document.addEventListener("submit",e=>{if(e.target.id==="bookingChatForm"){e.preventDefault();submitBookingChat(e.target)}});
     document.addEventListener("submit",e=>{if(e.target.id==="notificationSettingsForm"){e.preventDefault();submitNotificationSettings(e.target,e.submitter);return}if(e.target.matches("[data-booking-note-form]")){e.preventDefault();saveBookingNote(e.target)}if(e.target.matches("[data-review-reply-form]")){e.preventDefault();saveReviewReply(e.target)}if(e.target.id==="supportForm"){e.preventDefault();submitSupportCase(e.target)}if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="paymentForm"){e.preventDefault();submitPayment(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerPasswordChange"){e.preventDefault();changePartnerPassword(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}if(e.target.id==="manualBookingEdit"){e.preventDefault();saveManualBookingEdit(e.target)}if(e.target.id==="manualBookingCancel"){e.preventDefault();cancelManualBooking(e.target)}});
     document.addEventListener("change",e=>{if(e.target.matches("[data-import-migration]")){handleMigrationFile(e.target);return}if(e.target.matches("[data-manual-edit-room],[data-manual-edit-date]")){syncManualEditSchedule(e.target.form);return}if(e.target.matches("[data-busy-type]")){const fields=e.target.form?.querySelector("[data-manual-booking-fields]"),manual=e.target.value==="manual";if(fields)fields.hidden=!manual;fields?.querySelectorAll("[data-manual-required]").forEach(input=>input.required=manual);return}if(e.target.matches("[data-special-mode]")){const fields=e.target.form?.querySelector("[data-special-fields]");if(fields)fields.hidden=e.target.value!=="custom";return}if(e.target.matches('[name^="work_"][name$="_enabled"]')){e.target.closest(".schedule-day")?.classList.toggle("off",!e.target.checked);return}if(e.target.matches("[data-proposal-date],[data-proposal-time],[data-proposal-hours]")){updateProposalForm(e.target.form);return}if(e.target.matches("[data-booking-date],[data-booking-time],[data-booking-hours],[data-booking-service],[data-booking-extra-room]")){updateBookingForm(e.target.form);return}if(e.target.matches("[data-detail-service]")){toggleDetailService(e.target);return}if(e.target.matches("[data-detail-extra-room]")){toggleDetailExtraRoom(e.target);return}if(e.target.matches("[data-detail-date]")){state.date=e.target.value;state.time="";E.date.value=state.date;syncDateDisplay();renderSpace(e.target.dataset.detailDate,true)}if(e.target.matches("[data-detail-hours]")){state.hours=Number(e.target.value);E.hours.value=String(state.hours);renderSpace(e.target.dataset.detailHours,true)}if(e.target.matches("[data-admin-booking-event]")){adminBookingEventFilter=e.target.value;renderAdminDashboard(true);return}if(e.target.matches("[data-partner-booking-event]")){partnerBookingEventFilter=e.target.value;renderPartnerCabinet(true);return}if(e.target.matches("[data-partner-busy-room]")){state.partnerRoom=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-partner-busy-date]")){state.partnerDate=e.target.value;state.partnerWeekStart=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-photo-upload]"))handlePhotoUpload(e.target)});

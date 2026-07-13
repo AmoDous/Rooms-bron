@@ -1,4 +1,4 @@
-import type { City, Room, RoomSearchFilters, Venue } from "./types.js";
+import type { City, CityStats, Room, RoomSearchFilters, Venue } from "./types.js";
 
 export const venueIds = {
   kidsLoft: "10000000-0000-4000-8000-000000000001",
@@ -252,6 +252,7 @@ const rooms: Room[] = [
 export interface CatalogRepository {
   readonly storage: "memory" | "postgresql";
   listCities(): Promise<City[]>;
+  getCityStats(idOrName: string): Promise<CityStats | null>;
   listVenues(): Promise<Venue[]>;
   searchRooms(filters: RoomSearchFilters): Promise<Room[]>;
   findRoom(idOrSlug: string): Promise<Room | null>;
@@ -261,14 +262,44 @@ export interface CatalogRepository {
 export class MemoryCatalogRepository implements CatalogRepository {
   readonly storage = "memory" as const;
 
+  constructor(private readonly activeClientsByCity: Readonly<Record<string, number>> = {}) {}
+
+  private cityId(name: string): string {
+    return name.toLocaleLowerCase("ru-RU").replace(/\s+/g, "-");
+  }
+
+  private audienceLabel(count: number): string | null {
+    const threshold = [1000, 500, 200, 100, 50, 20].find((value) => count >= value);
+    return threshold ? `${threshold.toLocaleString("ru-RU")}+` : null;
+  }
+
   async listCities(): Promise<City[]> {
     const names = [...new Set(venues.filter((venue) => venue.publicationStatus === "published").map((venue) => venue.city))];
     return names.map((name) => ({
-      id: name.toLocaleLowerCase("ru-RU").replace(/\s+/g, "-"),
+      id: this.cityId(name),
       name,
       active: true,
       pilot: name === "Воронеж",
     }));
+  }
+
+  async getCityStats(idOrName: string): Promise<CityStats | null> {
+    const value = idOrName.trim().toLocaleLowerCase("ru-RU");
+    const city = (await this.listCities()).find((item) => item.id === value || item.name.toLocaleLowerCase("ru-RU") === value);
+    if (!city) return null;
+    const cityVenues = venues.filter((venue) => venue.publicationStatus === "published" && venue.city === city.name);
+    const venueSet = new Set(cityVenues.map((venue) => venue.id));
+    const publishedRooms = rooms.filter((room) => room.publicationStatus === "published" && venueSet.has(room.venueId)).length;
+    const activeClients = Math.max(0, Number(this.activeClientsByCity[city.name] ?? this.activeClientsByCity[city.id] ?? 0));
+    const activeClientsLabel = this.audienceLabel(activeClients);
+    return {
+      city,
+      publishedVenues: cityVenues.length,
+      publishedRooms,
+      activeClientsLabel,
+      audienceStage: activeClients >= 100 ? "established" : activeClients >= 20 ? "growing" : "launching",
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   async listVenues(): Promise<Venue[]> {

@@ -34,6 +34,10 @@ interface RoomParams {
   roomId: string;
 }
 
+interface CityParams {
+  cityId: string;
+}
+
 interface RoomQuery {
   date?: string;
 }
@@ -160,6 +164,20 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   }));
 
   app.get("/v1/cities", async () => config.repository.listCities());
+
+  app.get<{ Params: CityParams }>("/v1/cities/:cityId/stats", {
+    schema: {
+      params: {
+        type: "object",
+        required: ["cityId"],
+        properties: { cityId: { type: "string", minLength: 1, maxLength: 100 } },
+      },
+    },
+  }, async (request) => {
+    const stats = await config.repository.getCityStats(request.params.cityId);
+    if (!stats) throw new ApiError(404, "CITY_NOT_FOUND", "Город не найден или ещё не поддерживается Rooms.");
+    return stats;
+  });
 
   app.get<{ Querystring: SearchQuery }>("/v1/rooms", {
     schema: {

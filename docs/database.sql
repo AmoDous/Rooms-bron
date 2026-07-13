@@ -31,6 +31,7 @@ create table users (
   email_verified_at timestamptz,
   phone_verified_at timestamptz,
   blocked_at timestamptz,
+  last_active_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint users_contact_required check (email is not null or phone is not null)
@@ -413,6 +414,41 @@ create index room_reservations_period_idx on room_reservations using gist(room_i
 create index notification_deliveries_queue_idx on notification_deliveries(status, next_attempt_at, created_at);
 create index moderation_requests_queue_idx on moderation_requests(status, created_at);
 create index audit_log_entity_idx on audit_log(entity_type, entity_id, created_at desc);
+create index users_city_activity_idx on users(city, role, last_active_at desc) where blocked_at is null;
+
+create or replace view city_statistics as
+with client_stats as (
+  select
+    city,
+    count(*) as registered_clients,
+    count(*) filter (where last_active_at >= now() - interval '90 days') as active_clients_90d
+  from users
+  where role = 'client'
+    and blocked_at is null
+    and city is not null
+    and (email_verified_at is not null or phone_verified_at is not null)
+  group by city
+),
+venue_stats as (
+  select
+    v.city,
+    count(distinct v.id) as published_venues,
+    count(distinct r.id) filter (where r.status = 'published') as published_rooms
+  from venues v
+  left join rooms r on r.venue_id = v.id
+  where v.publication_status = 'published'
+    and v.verification_status = 'verified'
+    and v.partner_mode = 'catalog'
+  group by v.city
+)
+select
+  coalesce(client_stats.city, venue_stats.city) as city,
+  coalesce(client_stats.registered_clients, 0) as registered_clients,
+  coalesce(client_stats.active_clients_90d, 0) as active_clients_90d,
+  coalesce(venue_stats.published_venues, 0) as published_venues,
+  coalesce(venue_stats.published_rooms, 0) as published_rooms
+from client_stats
+full join venue_stats on venue_stats.city = client_stats.city;
 
 create or replace function set_updated_at() returns trigger language plpgsql as $$
 begin

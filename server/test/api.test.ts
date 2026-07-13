@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
-import { roomIds } from "../src/catalog.js";
+import { MemoryCatalogRepository, roomIds } from "../src/catalog.js";
 
 let app: FastifyInstance;
 
@@ -29,6 +29,28 @@ test("cities include pilot Voronezh and Moscow", async () => {
   const cities = response.json();
   assert.equal(cities.find((city: { name: string }) => city.name === "Воронеж")?.pilot, true);
   assert.ok(cities.some((city: { name: string }) => city.name === "Москва"));
+});
+
+test("city stats expose exact supply and bucket the public audience", async () => {
+  const launching = await app.inject({ method: "GET", url: "/v1/cities/воронеж/stats" });
+  assert.equal(launching.statusCode, 200);
+  assert.equal(launching.json().publishedVenues, 3);
+  assert.equal(launching.json().publishedRooms, 5);
+  assert.equal(launching.json().activeClientsLabel, null);
+  assert.equal(launching.json().audienceStage, "launching");
+
+  const audienceApp = buildApp({ logger: false, repository: new MemoryCatalogRepository({ Воронеж: 137 }) });
+  const established = await audienceApp.inject({ method: "GET", url: "/v1/cities/воронеж/stats" });
+  assert.equal(established.statusCode, 200);
+  assert.equal(established.json().activeClientsLabel, "100+");
+  assert.equal(established.json().audienceStage, "established");
+  await audienceApp.close();
+});
+
+test("city stats reject unsupported cities", async () => {
+  const response = await app.inject({ method: "GET", url: "/v1/cities/unknown-city/stats" });
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.json().code, "CITY_NOT_FOUND");
 });
 
 test("room search requires a city", async () => {

@@ -8,6 +8,15 @@ export interface City {
   pilot: boolean;
 }
 
+export interface CityStats {
+  city: City;
+  publishedVenues: number;
+  publishedRooms: number;
+  activeClientsLabel: string | null;
+  audienceStage: "launching" | "growing" | "established";
+  updatedAt: string;
+}
+
 export interface Venue {
   id: string;
   slug: string;

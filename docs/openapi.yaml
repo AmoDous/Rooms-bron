@@ -51,6 +51,26 @@ paths:
                 items:
                   $ref: '#/components/schemas/City'
 
+  /v1/cities/{cityId}/stats:
+    get:
+      tags: [Public]
+      operationId: getCityStats
+      parameters:
+        - name: cityId
+          in: path
+          required: true
+          description: City id returned by /v1/cities or its exact display name.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Public supply counts and privacy-safe audience bucket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CityStats'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/rooms:
     get:
       tags: [Public]
@@ -594,6 +614,19 @@ components:
         name: {type: string}
         active: {type: boolean}
         pilot: {type: boolean}
+
+    CityStats:
+      type: object
+      required: [city, publishedVenues, publishedRooms, activeClientsLabel, audienceStage, updatedAt]
+      properties:
+        city: {$ref: '#/components/schemas/City'}
+        publishedVenues: {type: integer, minimum: 0}
+        publishedRooms: {type: integer, minimum: 0}
+        activeClientsLabel:
+          type: [string, 'null']
+          description: Public threshold such as 20+, 50+ or 100+; null while the city is launching.
+        audienceStage: {type: string, enum: [launching, growing, established]}
+        updatedAt: {type: string, format: date-time}
 
     User:
       type: object

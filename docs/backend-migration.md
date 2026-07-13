@@ -6,7 +6,7 @@
 
 - установлен Node.js 24 LTS;
 - создан `server` на Fastify и TypeScript;
-- работают `/health`, `/v1/cities`, `/v1/rooms`, `/v1/rooms/{roomId}` и `/v1/availability/search`;
+- работают `/health`, `/v1/cities`, `/v1/cities/{cityId}/stats`, `/v1/rooms`, `/v1/rooms/{roomId}` и `/v1/availability/search`;
 - публичный каталог, фильтры и пересечение доступности покрыты автоматическими тестами;
 - источник данных пока `memory`, поэтому перезапуск возвращает исходные демо-данные;
 - PostgreSQL ещё не установлен, схема `database.sql` пока не применялась;
