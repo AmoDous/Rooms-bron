@@ -1014,7 +1014,7 @@
     const cities=["Воронеж","Москва","Санкт-Петербург","Краснодар"];
     const slotStep=.5;
     const times=Array.from({length:40},(_,i)=>hourLabel(10+i*slotStep));
-    const store={accounts:"rooms_accounts_v30",session:"rooms_session_v30",bookings:"rooms_bookings_v30",favorites:"rooms_favorites_v30",reviews:"rooms_reviews_v30",partner:"rooms_partner_v30",partnerAuth:"rooms_partner_auth_v30",partnerData:"rooms_partner_data_v30",partnerAccounts:"rooms_partner_accounts_v30",venueAdmin:"rooms_venue_admin_v30",partnerNotice:"rooms_partner_notice_v30",userNotice:"rooms_user_notice_v30",support:"rooms_support_v30",activity:"rooms_activity_v30",moderation:"rooms_moderation_v30",chat:"rooms_chat_v30",payouts:"rooms_payouts_v30",subscriptionBilling:"rooms_subscription_billing_v30",reminders:"rooms_reminders_v30",payments:"rooms_payments_v30"};
+    const store={accounts:"rooms_accounts_v30",session:"rooms_session_v30",bookings:"rooms_bookings_v30",favorites:"rooms_favorites_v30",reviews:"rooms_reviews_v30",partner:"rooms_partner_v30",partnerAuth:"rooms_partner_auth_v30",partnerData:"rooms_partner_data_v30",partnerAccounts:"rooms_partner_accounts_v30",venueAdmin:"rooms_venue_admin_v30",partnerNotice:"rooms_partner_notice_v30",userNotice:"rooms_user_notice_v30",adminNotice:"rooms_admin_notice_v30",support:"rooms_support_v30",activity:"rooms_activity_v30",moderation:"rooms_moderation_v30",chat:"rooms_chat_v30",payouts:"rooms_payouts_v30",subscriptionBilling:"rooms_subscription_billing_v30",reminders:"rooms_reminders_v30",payments:"rooms_payments_v30"};
     const adminAccess={login:"admin@rooms.ru",password:"rooms2026"};
     const accountantAccess={login:"accountant@rooms.ru",password:"rooms2026"};
     const day=n=>{const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
@@ -2373,9 +2373,30 @@
       const key=userNoticeKey();if(!key)return;
       const all=userNotices();all[key]=data;saveUserNotices(all);updateNoticeBadge();
     }
+    function adminNoticeState(){return read(store.adminNotice,{read:{}})||{read:{}}}
+    function saveAdminNoticeState(data){write(store.adminNotice,data);updateNoticeBadge()}
+    function adminNotificationItems(){
+      const stateMap=adminNoticeState().read||{},items=[],fallbackDate=`${today}T00:00:00`;
+      adminBookings().forEach(b=>{
+        const status=effectiveBookingStatus(b),created=b.updated||b.created||fallbackDate,details=`${b.venue||"Площадка"} · ${b.room||"помещение"} · ${b.date||"дата не указана"}${b.time?` в ${b.time}`:""}`;
+        if(status==="pending")items.push({id:`booking:${b.id}:pending`,type:"booking",target:`booking:${b.id}`,priority:1,title:"Новая заявка на бронь",details,created});
+        if(b.paymentStatus==="refund_pending")items.push({id:`refund:${b.id}:pending`,type:"refund",target:`booking:${b.id}`,priority:0,title:"Нужно выполнить возврат",details:`${details} · ${money(bookingFinance(b).prepay)}`,created:b.refundRequestedAt||created});
+      });
+      moderationRequests().filter(x=>(x.status||"pending")==="pending").forEach(x=>items.push({id:`moderation:${x.id}:${x.updated||x.created||"pending"}`,type:"moderation",target:`moderation:${x.id}`,priority:1,title:"Изменения ждут модерации",details:`${x.targetTitle||"Карточка площадки"} · ${(x.fields||[]).map(moderationFieldLabel).join(", ")||"данные карточки"}`,created:x.updated||x.created||fallbackDate}));
+      supportCases().filter(x=>(x.status||"open")!=="closed").forEach(x=>{const last=(x.messages||[]).at(-1);if(last?.actor==="admin")return;items.push({id:`support:${x.id}:${x.updated||x.created||"open"}`,type:"support",target:`support:${x.bookingId}`,priority:x.status==="open"?0:1,title:x.status==="open"?"Новое обращение в поддержку":"Новый ответ в обращении",details:`${x.topic||"Вопрос по брони"}${last?.text?` · ${String(last.text).slice(0,90)}`:""}`,created:x.updated||x.created||fallbackDate})});
+      adminLeads().filter(x=>["new","review"].includes(x.status||"new")).forEach(x=>items.push({id:`lead:${x.id}:${x.status||"new"}`,type:"lead",target:`lead:${x.id}`,priority:2,title:x.status==="review"?"Площадка проходит проверку":"Новая площадка на подключение",details:`${x.venue||"Без названия"} · ${x.city||"город не указан"} · ${x.rooms||1} помещений`,created:x.updated||x.created||fallbackDate}));
+      const manualData=partnerData();partnerManualBookings(manualData).filter(x=>x.status!=="cancelled").forEach(x=>{const issues=adminManualBookingIssues(x,manualData);if(!issues.length)return;const room=manualData.rooms?.[x.roomId]||rooms.find(r=>r.id===x.roomId);items.push({id:`manual:${x.id}:${issues.join("|")}:${x.updatedAt||x.created||"active"}`,type:"manual",target:`manual:${x.roomId}|${x.date}|${x.id}`,priority:0,title:"Конфликт ручной брони",details:`${room?.title||"Помещение"} · ${dateLabel(x.date)} ${intervalText(x.start,x.end)} · ${issues.join(", ")}`,created:x.updatedAt||x.created||fallbackDate})});
+      subscriptionInvoices().filter(x=>x.status==="overdue").forEach(x=>items.push({id:`billing:${x.id}:overdue`,type:"billing",target:`billing:${x.id}`,priority:0,title:"Просрочена оплата тарифа",details:`${x.venueTitle||"Площадка"} · ${billingMonthLabel(x.month)} · ${money(x.total)}`,created:x.overdueAt||x.createdAt||fallbackDate}));
+      return items.sort((a,b)=>a.priority-b.priority||String(b.created).localeCompare(String(a.created))).map(x=>({...x,read:!!stateMap[x.id]}));
+    }
+    function adminUnreadCount(){return adminNotificationItems().filter(x=>!x.read).length}
+    function markAdminNotificationsRead(items=adminNotificationItems()){
+      const now=new Date().toISOString(),read=Object.fromEntries(items.slice(0,120).map(x=>[x.id,adminNoticeState().read?.[x.id]||now]));
+      saveAdminNoticeState({read});
+    }
     function updateNoticeBadge(){
       if(!E.noticeBadge)return;
-      const acc=current(),userUnread=acc&&!isAdmin(acc)?Number(currentUserNotice().unread||0):0,partnerUnread=Number(partnerNotice().unread||0),total=userUnread+partnerUnread;
+      const acc=current(),total=isAdmin(acc)?adminUnreadCount():acc?isAccountant(acc)?0:Number(currentUserNotice().unread||0):currentPartnerAccount()?Number(partnerNotice().unread||0):0;
       E.noticeBadge.textContent=total>9?"9+":String(total);
       E.noticeBadge.classList.toggle("show",total>0);
     }
@@ -2438,6 +2459,25 @@
       markCurrentUserNoticesRead();
       const rows=items.map(x=>{const chat=x.status==="chat",target=chat?`chat:${x.bookingId}|profile`:x.bookingId,details=chat?(x.preview||"Площадка ответила в чате"):x.detail?`${x.venue||"Rooms"} · ${x.room||"помещение"} · ${x.detail}`:`${x.venue||"Rooms"} · ${x.room||"помещение"} · ${x.date||""} ${x.time?`в ${x.time}`:""}`;return `<button class="notification-item ${x.read?"":"unread"}" data-user-notice="${esc(target)}" type="button"><span class="notice-dot"></span><span><strong>${esc(userNoticeTitle(x.status))}</strong><span>${esc(details)}</span></span><time>${new Date(x.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></button>`}).join("");
       openModal(`<div class="admin-item-head"><div><span class="kicker">Личный кабинет</span><h2 style="margin:4px 0 6px">Уведомления</h2><p class="muted" style="margin:0">Статусы, сообщения, оплаты и напоминания о предстоящих бронях.</p></div><button class="btn" data-profile-back type="button">Назад</button></div><div class="notification-list">${rows||`<div class="empty" style="display:block">Уведомлений пока нет.</div>`}</div>`,true);
+    }
+    function renderAdminNotifications(){
+      if(!isAdmin())return renderAuth("login");
+      const items=adminNotificationItems(),unread=items.filter(x=>!x.read).length,rows=items.map(x=>`<button class="notification-item ${x.read?"":"unread"}" data-admin-notice="${esc(x.target)}" type="button"><span class="notice-dot"></span><span><strong>${esc(x.title)}</strong><span>${esc(x.details)}</span></span><time>${new Date(x.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></button>`).join("");
+      markAdminNotificationsRead(items);
+      openModal(`<div class="admin-item-head"><div><span class="kicker">Админка Rooms</span><h2 style="margin:4px 0 6px">Центр уведомлений</h2><p class="muted" style="margin:0">Здесь собраны только задачи, которые требуют внимания администратора.</p></div><button class="btn" data-admin-open type="button">Назад</button></div><div class="chips" style="margin-top:14px"><span class="status ${unread?"review":"paid"}">${unread?`Новых · ${unread}`:"Всё просмотрено"}</span><span class="muted">Нажмите на уведомление, чтобы перейти к записи.</span></div><div class="notification-list">${rows||`<div class="empty" style="display:block">Сейчас нет задач, требующих внимания.</div>`}</div>`,true);
+    }
+    function openAdminNotification(target){
+      if(!isAdmin())return renderAuth("login");
+      const value=String(target||"");
+      if(value.startsWith("manual:"))return renderAdminManualBooking(value.slice(7));
+      if(value.startsWith("support:"))return renderSupportCase(`${value.slice(8)}|admin`);
+      if(value.startsWith("billing:"))return renderAccountantDashboard();
+      if(value.startsWith("booking:")){
+        const id=value.slice(8),b=adminBookings().find(x=>x.id===id);if(!b)return toast("Заявка из уведомления больше недоступна.");
+        adminBookingFilter=partnerBookingGroup(b);renderAdminDashboard();requestAnimationFrame(()=>document.querySelector(`[data-booking-card="${id}"]`)?.scrollIntoView({behavior:"smooth",block:"center"}));return;
+      }
+      const selector=value.startsWith("moderation:")?"[data-admin-moderation]":value.startsWith("lead:")?"[data-admin-leads]":"";
+      renderAdminDashboard();if(selector)requestAnimationFrame(()=>document.querySelector(selector)?.scrollIntoView({behavior:"smooth",block:"center"}));
     }
     function openProfileBookings(){
       E.partnerAlert.classList.remove("show");
@@ -2881,7 +2921,7 @@
       if(focusBookings)requestAnimationFrame(()=>document.querySelector("[data-profile-bookings]")?.scrollIntoView({behavior:"smooth",block:"start"}));
     }
     function renderAdminDashboard(keep=false){
-      const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=customReviews().sort((a,b)=>reviewRank(a)-reviewRank(b)),moderation=moderationRequests().sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1)||new Date(b.updated||b.created)-new Date(a.updated||a.created)),adminCounts={new:0,payment:0,booked:0,history:0};
+      const top=E.modalBox.scrollTop,books=adminBookings(),leads=adminLeads(),reviews=customReviews().sort((a,b)=>reviewRank(a)-reviewRank(b)),moderation=moderationRequests().sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1)||new Date(b.updated||b.created)-new Date(a.updated||a.created)),adminCounts={new:0,payment:0,booked:0,history:0},adminUnread=adminUnreadCount();
       books.forEach(b=>adminCounts[partnerBookingGroup(b)]++);
       const pending=adminCounts.new,confirmed=adminCounts.payment+adminCounts.booked,visitCount=books.filter(b=>["visited","completed"].includes(effectiveBookingStatus(b))).length;
       const paidBooks=books.filter(isPrepayPaid),refundPendingBooks=books.filter(b=>b.paymentStatus==="refund_pending"),refundedBooks=books.filter(b=>b.paymentStatus==="refunded");
@@ -2905,14 +2945,14 @@
       openModal(`<div class="admin-dashboard">
         <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. Это v1 на локальных данных, но уже с рабочими статусами.</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(adminFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(adminFinance.extras)}</strong></div><div class="dash-card"><span class="muted">Заявки с допами</span><strong>${adminFinance.withServices}</strong></div></div>
-        <div class="chips"><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
+        <div class="chips"><button class="btn soft" data-admin-notifications type="button">Уведомления${adminUnread?` · ${adminUnread}`:""}</button><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
         ${adminAnalyticsPanel(books)}
         ${adminReminderPanel(books)}
         ${adminManualBookingsPanel(partnerData())}
         ${paymentLedgerPanel("admin")}
         <div class="admin-grid">
-          <section class="admin-panel"><h3>Заявки на бронь</h3><div class="booking-filters">${adminFilters}</div>${adminQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${adminEmpty}</div>`}</div></section>
-          <aside class="admin-panel"><h3>Изменения партнёра</h3><div class="admin-list">${moderationRows||`<div class="empty" style="display:block">Изменений на проверке пока нет.</div>`}</div><h3 style="margin-top:18px">Обращения в поддержку</h3>${renderSupportQueue("admin",5)}<h3 style="margin-top:18px">Площадки на подключение</h3><div class="admin-list">${leadRows}</div></aside>
+          <section class="admin-panel" data-admin-bookings><h3>Заявки на бронь</h3><div class="booking-filters">${adminFilters}</div>${adminQueue}<div class="admin-list">${bookingRows||`<div class="empty" style="display:block">${adminEmpty}</div>`}</div></section>
+          <aside class="admin-panel"><div data-admin-moderation><h3>Изменения партнёра</h3><div class="admin-list">${moderationRows||`<div class="empty" style="display:block">Изменений на проверке пока нет.</div>`}</div></div><div data-admin-support><h3 style="margin-top:18px">Обращения в поддержку</h3>${renderSupportQueue("admin",5)}</div><div data-admin-leads><h3 style="margin-top:18px">Площадки на подключение</h3><div class="admin-list">${leadRows}</div></div></aside>
         </div>
         <div class="admin-grid">
           <section class="admin-panel"><h3>Площадки и комнаты</h3><div class="admin-room-table">${roomRows}</div></section>
@@ -3582,7 +3622,7 @@
     E.maxPrice.addEventListener("change",()=>{syncFilterSummary();renderCatalog()});
     E.chips.addEventListener("change",()=>{syncFilterSummary();renderCatalog()});
     E.cityButton.addEventListener("click",renderCityPicker);
-    E.noticeButton.addEventListener("click",()=>current()&&!isAdmin()&&!isAccountant()?renderUserNotifications():currentPartnerAccount()?renderPartnerNotifications():partnerNotice().unread?openPartnerBookings():toast("Уведомлений пока нет."));
+    E.noticeButton.addEventListener("click",()=>isAdmin()?renderAdminNotifications():current()?isAccountant()?toast("Уведомлений пока нет."):renderUserNotifications():currentPartnerAccount()?renderPartnerNotifications():partnerNotice().unread?openPartnerBookings():toast("Уведомлений пока нет."));
     E.accountButton.addEventListener("click",()=>current()?renderProfile():renderAuth());
     E.partnerEntry.addEventListener("click",openPartner);
     E.partnerAlert.addEventListener("click",handleNoticeClick);
@@ -3618,6 +3658,8 @@
       if(e.target.closest("[data-export-stats]")){exportAdminStats();return}
       const exportButton=e.target.closest("[data-export]");if(exportButton){exportBookings(exportButton.dataset.export);return}
       if(e.target.closest("[data-accountant-open]")){renderAccountantDashboard();return}
+      if(e.target.closest("[data-admin-notifications]")){renderAdminNotifications();return}
+      const adminNotice=e.target.closest("[data-admin-notice]");if(adminNotice){openAdminNotification(adminNotice.dataset.adminNotice);return}
       if(e.target.closest("[data-admin-open]")){renderAdminDashboard();return}
       if(e.target.closest("[data-create-payouts]")){createPayoutBatches();return}
       const payoutPaid=e.target.closest("[data-payout-paid]");if(payoutPaid){completePayoutBatch(payoutPaid.dataset.payoutPaid);return}
