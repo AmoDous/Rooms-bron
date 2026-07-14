@@ -118,6 +118,118 @@ test("client auth keeps passwords private and revokes a logged-out session", asy
   assert.equal(malformedRefresh.statusCode, 401);
 });
 
+test("client profile and bookings use authenticated server data and server prices", async () => {
+  const registration = {
+    name: "Клиент бронирования",
+    email: "booking.client@rooms.test",
+    phone: "+7 900 222-33-44",
+    city: "Воронеж",
+    password: "booking-test-2026",
+    legal: { termsVersion: "test-1", privacyVersion: "test-1", acceptedAt: new Date().toISOString() },
+  };
+  const created = await app.inject({ method: "POST", url: "/v1/auth/client/register", payload: registration });
+  assert.equal(created.statusCode, 201);
+  const accessToken = created.json().accessToken;
+  const otherSession = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: registration.email, password: registration.password },
+  });
+  assert.equal(otherSession.statusCode, 200);
+
+  const wrongPassword = await app.inject({
+    method: "PATCH",
+    url: "/v1/me",
+    headers: { authorization: `Bearer ${accessToken}` },
+    payload: {
+      name: "Обновлённый клиент",
+      email: "booking.updated@rooms.test",
+      phone: "+7 900 222-33-44",
+      city: "Воронеж",
+      currentPassword: "not-the-current-password",
+      newPassword: "booking-updated-2026",
+    },
+  });
+  assert.equal(wrongPassword.statusCode, 401);
+  assert.equal(wrongPassword.json().code, "CURRENT_PASSWORD_INVALID");
+
+  const profile = await app.inject({
+    method: "PATCH",
+    url: "/v1/me",
+    headers: { authorization: `Bearer ${accessToken}` },
+    payload: {
+      name: "Обновлённый клиент",
+      email: "booking.updated@rooms.test",
+      phone: "+7 900 222-33-44",
+      city: "Воронеж",
+      currentPassword: registration.password,
+      newPassword: "booking-updated-2026",
+    },
+  });
+  assert.equal(profile.statusCode, 200);
+  assert.equal(profile.json().name, "Обновлённый клиент");
+  const revokedOtherSession = await app.inject({
+    method: "GET",
+    url: "/v1/me",
+    headers: { authorization: `Bearer ${otherSession.json().accessToken}` },
+  });
+  assert.equal(revokedOtherSession.statusCode, 401);
+
+  const login = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "booking.updated@rooms.test", password: "booking-updated-2026" },
+  });
+  assert.equal(login.statusCode, 200);
+  const currentAccessToken = login.json().accessToken;
+  const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const bookingBody = {
+    primaryRoomId: roomIds.kosmos,
+    roomIds: [roomIds.kosmos],
+    startsAt: `${future}T10:00:00+03:00`,
+    durationMinutes: 120,
+    guests: 8,
+    eventType: "kids",
+    eventName: "День рождения",
+    serviceIds: ["30000000-0000-4000-8000-000000000001"],
+    onSitePaymentMethod: "card",
+    comment: "Нужен стол для торта",
+    legal: { termsVersion: "test-1", privacyVersion: "test-1", acceptedAt: new Date().toISOString() },
+  };
+  const booking = await app.inject({
+    method: "POST",
+    url: "/v1/bookings",
+    headers: { authorization: `Bearer ${currentAccessToken}` },
+    payload: bookingBody,
+  });
+  assert.equal(booking.statusCode, 201);
+  assert.equal(booking.json().status, "pending");
+  assert.equal(booking.json().clientName, "Обновлённый клиент");
+  assert.equal(booking.json().money.roomTotal, 3200);
+  assert.equal(booking.json().money.serviceTotal, 4000);
+  assert.equal(booking.json().money.total, 7200);
+  assert.equal(booking.json().money.prepayment, 2160);
+  assert.equal(booking.json().money.remainingOnSite, 5040);
+
+  const list = await app.inject({
+    method: "GET",
+    url: "/v1/bookings?statusGroup=active",
+    headers: { authorization: `Bearer ${currentAccessToken}` },
+  });
+  assert.equal(list.statusCode, 200);
+  assert.equal(list.json().length, 1);
+  assert.equal(list.json()[0].id, booking.json().id);
+
+  const unavailable = await app.inject({
+    method: "POST",
+    url: "/v1/bookings",
+    headers: { authorization: `Bearer ${currentAccessToken}` },
+    payload: { ...bookingBody, startsAt: `${future}T18:00:00+03:00` },
+  });
+  assert.equal(unavailable.statusCode, 409);
+  assert.equal(unavailable.json().code, "SLOT_UNAVAILABLE");
+});
+
 test("city stats expose exact supply and bucket the public audience", async () => {
   const launching = await app.inject({ method: "GET", url: "/v1/cities/воронеж/stats" });
   assert.equal(launching.statusCode, 200);

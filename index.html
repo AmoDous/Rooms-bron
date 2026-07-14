@@ -1083,7 +1083,7 @@
     ];
     const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname);
     const apiState={base:apiQuery==="local"||localPreview?"http://127.0.0.1:3000":"",connected:false,storage:"",reviews:new Map(),accessToken:""};
-    async function apiRequest(path,{method="GET",body,auth=false}={}){
+    async function apiRequest(path,{method="GET",body,auth=false,retry=true}={}){
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3500);
       const headers={Accept:"application/json"};
       if(body!==undefined)headers["Content-Type"]="application/json";
@@ -1091,7 +1091,10 @@
       try{
         const response=await fetch(`${apiState.base}${path}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),credentials:"include",signal:controller.signal});
         const payload=response.status===204?null:await response.json().catch(()=>null);
-        if(!response.ok){const error=new Error(payload?.message||`Rooms API ${response.status}`);error.status=response.status;error.code=payload?.code||"API_ERROR";throw error}
+        if(!response.ok){
+          if(response.status===401&&auth&&retry){const refreshed=await apiRequest("/v1/auth/refresh",{method:"POST",retry:false});acceptApiSession(refreshed);return apiRequest(path,{method,body,auth,retry:false})}
+          const error=new Error(payload?.message||`Rooms API ${response.status}`);error.status=response.status;error.code=payload?.code||"API_ERROR";error.details=payload?.details||[];throw error;
+        }
         return payload;
       }
       finally{clearTimeout(timer)}
@@ -1105,12 +1108,25 @@
       return account;
     }
     function acceptApiSession(payload){apiState.accessToken=payload.accessToken||"";return syncApiUser(payload.user)}
+    function apiBookingDateTime(value){
+      const parts=Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Moscow",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(value)).map(part=>[part.type,part.value]));
+      return {date:`${parts.year}-${parts.month}-${parts.day}`,time:`${parts.hour}:${parts.minute}`};
+    }
+    function localBookingFromApi(item){
+      const primary=item.rooms.find(room=>room.isPrimary)||item.rooms[0],primaryLocal=rooms.find(room=>room.apiId===primary?.id||room.id===primary?.slug),start=apiBookingDateTime(item.startsAt),hours=Math.max(.5,(new Date(item.endsAt)-new Date(item.startsAt))/3600000);
+      const extras=item.rooms.filter(room=>room!==primary).map(room=>{const local=rooms.find(item=>item.apiId===room.id||item.id===room.slug);return {id:local?.id||room.slug||room.id,title:room.title,price:Number(room.pricePerHour)||0,capacity:Number(room.capacityMax)||1}});
+      return {id:item.id,publicNumber:item.publicNumber,roomId:primaryLocal?.id||primary?.slug||primary?.id,room:primary?.title||"Помещение",roomPrice:Number(primary?.pricePerHour)||0,extraRooms:extras,venue:item.venue.title,city:item.venue.city,date:start.date,time:start.time,hours,guests:Number(item.guests)||1,name:item.clientName,phone:phone(item.clientPhone),eventType:item.eventType||"",eventName:item.eventName||"",paymentMethod:item.onSitePaymentMethod||"card",comment:item.comment||"",services:(item.services||[]).map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})),total:Number(item.money?.total)||0,prepay:Number(item.money?.prepayment)||0,policy:bookingPolicySnapshot(Number(item.money?.prepayment)||0),status:item.status,created:item.createdAt,server:true,history:[historyEntry("created","Заявка создана",`${start.date} в ${start.time} · ${hours} ч · ${item.guests} гостей`,"client")]};
+    }
+    function mergeApiBookings(items){
+      const mapped=(items||[]).map(localBookingFromApi),ids=new Set(mapped.map(item=>item.id)),legacy=read(store.bookings,[]).filter(item=>!item.server&&!ids.has(item.id));write(store.bookings,[...mapped,...legacy].slice(0,100));return mapped;
+    }
+    async function syncApiBookings(){if(!apiState.connected||!apiState.accessToken)return [];return mergeApiBookings(await apiRequest("/v1/bookings?statusGroup=all",{auth:true}))}
     async function restoreApiSession(){
       const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null;
       if(!session||(!session.source&&!account?.api))return null;
-      try{return acceptApiSession(await apiRequest("/v1/auth/refresh",{method:"POST"}))}
+      try{const restored=acceptApiSession(await apiRequest("/v1/auth/refresh",{method:"POST"}));await syncApiBookings();return restored}
       catch(error){
-        if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(account?.api)write(store.accounts,accounts().filter(item=>item.id!==account.id))}
+        if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(account?.api){write(store.accounts,accounts().filter(item=>item.id!==account.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}}
         return null;
       }
     }
@@ -3170,6 +3186,7 @@
       openModal(`<span class="kicker">Личный кабинет</span><h2 style="margin:0">${reg?"Регистрация":"Войти"}</h2><div class="auth-tabs"><button class="btn ${!reg?"active":""}" data-auth="login" type="button">Войти</button><button class="btn ${reg?"active":""}" data-auth="register" type="button">Регистрация</button></div>${reg?`<form id="registerForm"><div class="form"><div class="field"><label>Имя</label><input name="name" required></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" placeholder="+7..." required></div><div class="field"><label>Город поиска</label><select name="city">${cities.map(c=>`<option ${c===state.city?"selected":""}>${c}</option>`).join("")}</select></div><div class="city-proof" data-city-proof="client" aria-live="polite">${cityProofHtml(state.city,"client")}</div><div class="field full"><label>Пароль</label><input name="password" type="password" minlength="4" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Зарегистрироваться</button></div></form>`:`<form id="loginForm"><div class="form"><div class="field full"><label>Email или телефон</label><input name="login" value="${esc(prefill)}" autocomplete="username" placeholder="mail@example.com или +7..." required></div><div class="field full"><label>Пароль</label><input name="password" type="password" autocomplete="current-password" placeholder="Введите пароль" required></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Войти</button></div></form>`}<div class="captcha"><input type="checkbox" checked><div><strong>Я не робот</strong><div class="muted">Демо-проверка перед входом</div></div></div><p class="auth-copy">При входе или регистрации вы принимаете пользовательское соглашение, политику конфиденциальности и согласие на обработку персональных данных.</p><button class="btn soft" data-partner-login type="button">Вход для партнёров</button>`,true);
       const registrationPassword=E.modalContent.querySelector('#registerForm [name="password"]');
       if(registrationPassword){registrationPassword.minLength=8;registrationPassword.autocomplete="new-password"}
+      if(reg&&pending){const form=E.modalContent.querySelector("#registerForm");if(form){form.name.value=pending.name||"";form.phone.value=prefill||pending.phone||""}}
     }
     function bookingFlow(status){
       const steps=[["pending","заявка"],["proposed","вариант"],["awaiting_payment","предоплата"],["paid","оплачена"],["visited","посещение"]],current=status==="completed"?"visited":status==="confirmed"?"awaiting_payment":status;
@@ -3290,6 +3307,7 @@
     function renderPersonalData(){
       const acc=current();if(!acc)return renderAuth();
       openModal(`<div class="admin-item-head"><div><span class="kicker">Личный кабинет</span><h2 style="margin:4px 0 6px">Личные данные</h2><p class="muted" style="margin:0">Контакты используются для заявок и подтверждений бронирования.</p></div><button class="btn" data-profile-back type="button">Назад</button></div><form id="personalDataForm" style="margin-top:16px"><div class="form"><div class="field"><label>Имя</label><input name="name" value="${esc(acc.name||"")}" autocomplete="name" required></div><div class="field"><label>Email</label><input name="email" type="email" value="${esc(acc.email||"")}" autocomplete="email" required></div><div class="field"><label>Телефон</label><input name="phone" type="tel" value="${esc(acc.phone||"")}" autocomplete="tel" placeholder="+7..." required></div><div class="field"><label>Город поиска</label><select name="city">${cities.map(c=>`<option ${c===(acc.city||state.city)?"selected":""}>${c}</option>`).join("")}</select></div><div class="field full"><label>${acc.password?"Новый пароль":"Создайте пароль"}</label><input name="password" type="password" minlength="4" autocomplete="new-password" placeholder="${acc.password?"Оставьте пустым, если не хотите менять":"Минимум 4 символа"}" ${acc.password?"":"required"}></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Сохранить данные</button></div></form>`,true);
+      if(acc.api){const passwordField=E.modalContent.querySelector('#personalDataForm [name="password"]')?.closest(".field");if(passwordField)passwordField.outerHTML=`<div class="field full"><label>Текущий пароль</label><input name="currentPassword" type="password" autocomplete="current-password" placeholder="Нужен только при смене пароля"></div><div class="field full"><label>Новый пароль</label><input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Оставьте пустым, если не хотите менять"></div>`}else{const password=E.modalContent.querySelector('#personalDataForm [name="password"]');if(password){password.minLength=8;password.placeholder=acc.password?"Оставьте пустым, если не хотите менять":"Минимум 8 символов"}}
     }
     function renderProfile(focusBookings=false){
       const acc=current();if(!acc)return renderAuth();
@@ -3897,14 +3915,21 @@
       const b=read(store.bookings,[]).find(x=>x.id===tx.bookingId)||adminBookings().find(x=>x.id===tx.bookingId),f=b?bookingFinance(b):{total:tx.amount,remaining:0},receipt=tx.receipt||{},refunded=tx.status==="refunded";
       openModal(`<div class="receipt-card"><div class="receipt-head"><div><span class="kicker">${refunded?"Возврат выполнен":"Оплата прошла"}</span><h2>Электронный чек</h2></div><div class="receipt-number">${esc(receipt.number||"чек формируется")}<br>${transactionDate(tx.paidAt||tx.createdAt)}</div></div><div class="receipt-lines"><div class="receipt-line"><span>Статус операции</span><strong>${transactionStatusLabel(tx.status)}</strong></div><div class="receipt-line"><span>Операция Rooms</span><strong>${esc(tx.id)}</strong></div><div class="receipt-line"><span>ID эквайринга</span><strong>${esc(tx.providerPaymentId||"—")}</strong></div><div class="receipt-line"><span>Бронирование</span><strong>${esc(tx.venue)} · ${esc(tx.room)}</strong></div><div class="receipt-line"><span>Позиция</span><strong>${esc(receipt.items?.[0]?.name||"Предоплата за бронирование")}</strong></div><div class="receipt-line"><span>Карта</span><strong>${esc(tx.maskedCard||"—")}</strong></div><div class="receipt-line receipt-total"><span>${refunded?"Сумма возврата":"Оплачено"}</span><strong>${money(tx.amount)}</strong></div>${b?`<div class="receipt-line"><span>Полная стоимость брони</span><strong>${money(f.total)}</strong></div><div class="receipt-line"><span>Остаток на площадке</span><strong>${money(f.remaining)} · ${esc(paymentMethodLabel(bookingPaymentMethod(b)))}</strong></div>`:""}<div class="receipt-line"><span>Чек направлен</span><strong>${esc(tx.email||receipt.buyer||"—")}</strong></div>${refunded?`<div class="receipt-line"><span>Возврат</span><strong>${esc(tx.refundId||"—")} · ${transactionDate(tx.refundedAt)}</strong></div>`:""}</div><div class="chat-guard" style="margin-top:14px">Это демонстрационные данные чека. При подключении онлайн-кассы здесь появятся фискальный признак и ссылка оператора фискальных данных.</div><div class="chips" style="margin-top:14px"><button class="btn primary" data-payment-back="${esc(area)}" type="button">Назад</button></div></div>`,true,true);
     }
-    function saveBooking(b){
-      const list=read(store.bookings,[]),roomsText=b.extraRooms?.length?` · дополнительно: ${extraRoomsText(b.extraRooms)}`:"",item={...b,history:[historyEntry("created","Заявка создана",`${b.date} в ${b.time} · ${b.hours} ч · ${b.guests} гостей${roomsText}`,"client")]},acc=current();
-      write(store.bookings,[item,...list].slice(0,40));
-      recordConsent({subjectId:item.id,phone:item.phone,email:acc?.email||"",context:"booking",documents:["terms","privacy"]});
-      logActivity("booking_new","Клиент отправил заявку",`${item.venue} · ${item.room}${roomsText} · ${item.date} ${item.time}`,"client");pending=null;notifyPartnerBooking(item);toast("Заявка отправлена. Площадка подтвердит время.");
+    function apiBookingPayload(b){
+      const primary=rooms.find(room=>room.id===b.roomId),roomIds=[primary,...(b.extraRooms||[]).map(extra=>rooms.find(room=>room.id===extra.id))].filter(Boolean).map(room=>room.apiId||room.id);
+      return {primaryRoomId:primary?.apiId||primary?.id,roomIds,startsAt:`${b.date}T${b.time}:00+03:00`,durationMinutes:Math.round(Number(b.hours)*60),guests:Number(b.guests),eventType:b.eventType||null,eventName:b.eventName||null,serviceIds:(b.services||[]).map(service=>service.id),onSitePaymentMethod:b.paymentMethod||"card",comment:b.comment||"",legal:{termsVersion:legalVersion,privacyVersion:legalVersion,acceptedAt:new Date().toISOString()}};
+    }
+    async function saveBooking(b){
+      const acc=current();
+      if(apiState.connected&&acc?.api){
+        const created=await apiRequest("/v1/bookings",{method:"POST",auth:true,body:apiBookingPayload(b)}),item=localBookingFromApi(created),list=read(store.bookings,[]).filter(existing=>existing.id!==item.id),roomsText=item.extraRooms?.length?` · дополнительно: ${extraRoomsText(item.extraRooms)}`:"";
+        write(store.bookings,[item,...list].slice(0,100));logActivity("booking_new","Клиент отправил заявку",`${item.venue} · ${item.room}${roomsText} · ${item.date} ${item.time}`,"client");pending=null;notifyPartnerBooking(item);toast("Заявка сохранена. Площадка подтвердит время.");return item;
+      }
+      const list=read(store.bookings,[]),roomsText=b.extraRooms?.length?` · дополнительно: ${extraRoomsText(b.extraRooms)}`:"",item={...b,history:[historyEntry("created","Заявка создана",`${b.date} в ${b.time} · ${b.hours} ч · ${b.guests} гостей${roomsText}`,"client")]};
+      write(store.bookings,[item,...list].slice(0,40));recordConsent({subjectId:item.id,phone:item.phone,email:acc?.email||"",context:"booking",documents:["terms","privacy"]});logActivity("booking_new","Клиент отправил заявку",`${item.venue} · ${item.room}${roomsText} · ${item.date} ${item.time}`,"client");pending=null;notifyPartnerBooking(item);toast("Заявка отправлена. Площадка подтвердит время.");return item;
     }
     let pending=null;
-    function submitBooking(form){
+    async function submitBooking(form){
       const r=rooms.find(x=>x.id===form.dataset.room),v=venue(r),fd=new FormData(form),ph=phone(fd.get("phone"));
       if(!ph)return toast("Введите корректный телефон.");
       const date=fd.get("date"),time=fd.get("time"),h=Number(fd.get("hours")),guests=Number(fd.get("guests")),available=capacity(r,date,time);
@@ -3917,10 +3942,18 @@
       const availablePaymentMethods=roomPaymentMethods(r),requestedPaymentMethod=String(fd.get("paymentMethod")||""),paymentMethod=availablePaymentMethods.includes(requestedPaymentMethod)?requestedPaymentMethod:availablePaymentMethods[0];
       const total=r.price*h+extraRoomsCost(extraRooms,h)+servicesTotal(services),prepay=Math.ceil(total*.3),b={id:`R-${Date.now().toString().slice(-6)}`,roomId:r.id,room:r.title,roomPrice:r.price,extraRooms:extraRoomSnapshots(extraRooms),venue:v.title,city:v.city,date,time,hours:h,guests,name:fd.get("name"),phone:ph,eventType,eventName,paymentMethod,comment:String(fd.get("comment")||"").trim(),services,total,prepay,policy:bookingPolicySnapshot(prepay),status:"pending",created:new Date().toISOString()};
       const ex=findAccount(ph),cur=current();
+      if(apiState.connected){
+        if(!cur?.api){pending=b;renderAuth(ex?"login":"register",ph);toast(ex?"Войдите в кабинет, чтобы отправить заявку.":"Зарегистрируйтесь, чтобы заявка сохранилась в личном кабинете.");return}
+        if(phone(cur.phone)!==ph)return toast("Телефон в заявке должен совпадать с телефоном личного кабинета.");
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{await saveBooking(b);closeModal();hydrate()}catch(error){toast(error.message||"Не удалось отправить заявку. Обновите свободные окна и попробуйте снова.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       if(ex&&!cur){pending=b;renderAuth("login",ph);toast("Кабинет с таким телефоном уже есть. Войдите, чтобы отправить заявку.");return}
       if(ex&&cur&&ex.id!==cur.id){pending=b;renderAuth("login",ph);toast("Войдите в кабинет, к которому привязан этот телефон.");return}
       if(!ex&&!cur){const createdAt=new Date().toISOString(),acc={id:`U-${Date.now()}`,name:b.name,email:"",phone:ph,city:v.city,password:"",basic:true,createdAt,lastActiveAt:createdAt};write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});selectCity(acc.city,false,false);hydrate()}
-      saveBooking(b);closeModal();hydrate();
+      await saveBooking(b);closeModal();hydrate();
     }
     function submitReview(form){
       const id=form.dataset.reviewRoom,r=rooms.find(x=>x.id===id),acc=current();
@@ -3945,8 +3978,8 @@
       if(apiState.connected){
         const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
         try{
-          const acc=acceptApiSession(await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}));
-          if(pending){saveBooking(pending);closeModal()}else renderProfile();
+          const acc=acceptApiSession(await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}));await syncApiBookings();
+          if(pending){await saveBooking(pending);closeModal()}else renderProfile();
           hydrate();showPendingUserNotice();toast(`С возвращением, ${acc.name}.`);
         }catch(error){toast(error.message||"Не удалось войти. Повторите попытку.")}
         finally{if(submit)submit.disabled=false}
@@ -3957,7 +3990,7 @@
       if(acc.password&&acc.password!==form.password.value)return toast("Пароль не подходит.");
       write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,lastActiveAt:new Date().toISOString()}:item));write(store.session,{id:acc.id});
       selectCity(acc.city||state.city,false,false);
-      if(pending){saveBooking(pending);closeModal()}else renderProfile();
+      if(pending){await saveBooking(pending);closeModal()}else renderProfile();
       hydrate();
       showPendingUserNotice();
     }
@@ -3967,8 +4000,8 @@
         const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
         try{
           const acceptedAt=new Date().toISOString();
-          const acc=acceptApiSession(await apiRequest("/v1/auth/client/register",{method:"POST",body:{name:String(fd.get("name")||"").trim(),email:String(fd.get("email")||"").trim(),phone:String(fd.get("phone")||"").trim(),city:String(fd.get("city")||"").trim(),password:String(fd.get("password")||""),legal:{termsVersion:legalVersion,privacyVersion:legalVersion,acceptedAt}}}));
-          if(pending){saveBooking(pending);closeModal()}else renderProfile();
+          const acc=acceptApiSession(await apiRequest("/v1/auth/client/register",{method:"POST",body:{name:String(fd.get("name")||"").trim(),email:String(fd.get("email")||"").trim(),phone:String(fd.get("phone")||"").trim(),city:String(fd.get("city")||"").trim(),password:String(fd.get("password")||""),legal:{termsVersion:legalVersion,privacyVersion:legalVersion,acceptedAt}}}));await syncApiBookings();
+          if(pending){await saveBooking(pending);closeModal()}else renderProfile();
           hydrate();toast(`Кабинет создан, ${acc.name}.`);
         }catch(error){toast(error.message||"Не удалось создать кабинет. Повторите попытку.")}
         finally{if(submit)submit.disabled=false}
@@ -3976,21 +4009,33 @@
       }
       if(findAccount(fd.get("email"))||findAccount(ph))return toast("Кабинет с такой почтой или телефоном уже есть.");
       const createdAt=new Date().toISOString(),acc={id:`U-${Date.now()}`,name:fd.get("name"),email:fd.get("email"),phone:ph,city:fd.get("city"),password:fd.get("password"),createdAt,lastActiveAt:createdAt};
-      write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});recordConsent({subjectId:acc.id,phone:acc.phone,email:acc.email,context:"registration",documents:["terms","privacy"]});selectCity(acc.city,false,false);renderProfile();hydrate();toast("Кабинет создан.");
+      write(store.accounts,[...accounts(),acc]);write(store.session,{id:acc.id});recordConsent({subjectId:acc.id,phone:acc.phone,email:acc.email,context:"registration",documents:["terms","privacy"]});selectCity(acc.city,false,false);if(pending){await saveBooking(pending);closeModal()}else renderProfile();hydrate();toast("Кабинет создан.");
     }
     async function logoutClient(){
       const acc=current();
       if(acc?.api&&apiState.connected){try{await apiRequest("/v1/auth/logout",{method:"POST",auth:true})}catch(error){console.info("Rooms: серверный выход завершён локально.",error)}}
+      if(acc?.api){write(store.accounts,accounts().filter(item=>item.id!==acc.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}
       apiState.accessToken="";localStorage.removeItem(store.session);hydrate();closeModal();toast("Вы вышли.");
     }
-    function savePersonalData(form){
+    async function savePersonalData(form){
       const acc=current();if(!acc)return renderAuth();
       const fd=new FormData(form),name=String(fd.get("name")||"").trim(),email=String(fd.get("email")||"").trim().toLowerCase(),ph=phone(fd.get("phone")),city=fd.get("city"),nextPassword=String(fd.get("password")||"");
       if(name.length<2)return toast("Укажите имя минимум из двух символов.");
       if(!email.includes("@"))return toast("Проверьте электронную почту.");
       if(ph.length<10)return toast("Проверьте номер телефона.");
-      if(!acc.password&&nextPassword.length<4)return toast("Создайте пароль минимум из четырёх символов.");
-      if(nextPassword&&nextPassword.length<4)return toast("Новый пароль должен быть не короче четырёх символов.");
+      if(!acc.api&&!acc.password&&nextPassword.length<8)return toast("Создайте пароль минимум из восьми символов.");
+      if(nextPassword&&nextPassword.length<8)return toast("Новый пароль должен быть не короче восьми символов.");
+      if(acc.api){
+        const currentPassword=String(fd.get("currentPassword")||"");if(nextPassword&&!currentPassword)return toast("Для смены пароля укажите текущий пароль.");
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const body={name,email,phone:ph,city:String(city||state.city),...(nextPassword?{currentPassword,newPassword:nextPassword}:{})},oldKey=phone(acc.phone),updated=syncApiUser(await apiRequest("/v1/me",{method:"PATCH",auth:true,body}));await syncApiBookings();
+          if(oldKey!==phone(updated.phone)){const notices=userNotices();if(notices[oldKey]){notices[phone(updated.phone)]=notices[oldKey];delete notices[oldKey];saveUserNotices(notices)}}
+          selectCity(updated.city||state.city,false,false);logActivity("profile_update","Клиент обновил личные данные",`${updated.name} · ${updated.city||state.city}`,"client");hydrate();renderProfile();toast("Личные данные сохранены.");
+        }catch(error){toast(error.message||"Не удалось сохранить личные данные.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       const duplicate=accounts().find(a=>a.id!==acc.id&&(phone(a.phone)===ph||String(a.email||"").trim().toLowerCase()===email));
       if(duplicate)return toast("Эта почта или телефон уже используются в другом кабинете.");
       const updated={...acc,name,email,phone:ph,city,password:nextPassword||acc.password,basic:false,lastActiveAt:new Date().toISOString()};
@@ -4014,7 +4059,7 @@
     }
     function selectCity(city,render=true,syncAccount=true){
       const next=supportedCity(city)||"Воронеж";state.city=next;write(store.cityPreference,next);
-      const acc=current();if(syncAccount&&acc&&!isAdmin(acc)&&!isAccountant(acc))write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,city:next,lastActiveAt:new Date().toISOString()}:item));
+      const acc=current();if(syncAccount&&acc&&!isAdmin(acc)&&!isAccountant(acc)){write(store.accounts,accounts().map(item=>item.id===acc.id?{...item,city:next,lastActiveAt:new Date().toISOString()}:item));if(acc.api&&apiState.connected)void apiRequest("/v1/me",{method:"PATCH",auth:true,body:{name:acc.name,email:acc.email,phone:acc.phone,city:next}}).then(syncApiUser).catch(error=>console.info("Rooms: город профиля пока сохранён только локально.",error))}
       E.cityButton.textContent=next;E.heroCityLabel.textContent=`${next} · ${next==="Воронеж"?"пилотный запуск":"демо-режим"}`;E.searchCity.value=next;$("partnerCity").value=next;
       updateCityProof("partner",next);
       if(render)renderCatalog();

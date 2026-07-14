@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuthConflictError, AuthService, MemoryAuthRepository, normalizeRussianPhone, type AuthRepository, type IssuedAuthSession } from "./auth.js";
+import { MemoryBookingRepository, type BookingRepository, type BookingStatusGroup } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import type {
@@ -22,6 +23,7 @@ interface AppConfig {
   logger: boolean;
   repository: CatalogRepository;
   authRepository: AuthRepository;
+  bookingRepository: BookingRepository;
   authTokenSecret: string;
   secureCookies: boolean;
 }
@@ -74,6 +76,37 @@ interface ClientRegistrationBody {
 interface LoginBody {
   login: string;
   password: string;
+}
+
+interface ClientProfileBody {
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
+interface BookingCreateBody {
+  primaryRoomId: string;
+  roomIds: string[];
+  startsAt: string;
+  durationMinutes: number;
+  guests: number;
+  eventType?: string | null;
+  eventName?: string | null;
+  serviceIds?: string[];
+  onSitePaymentMethod?: "card" | "cash";
+  comment?: string;
+  legal: {
+    termsVersion: string;
+    privacyVersion: string;
+    acceptedAt: string;
+  };
+}
+
+interface BookingQuery {
+  statusGroup?: BookingStatusGroup;
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -149,6 +182,24 @@ function authResponse(session: IssuedAuthSession) {
   return { user: session.user, accessToken: session.accessToken, expiresIn: session.expiresIn };
 }
 
+function moscowDateTime(value: Date): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: MOSCOW_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(value);
+  const item = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return { date: `${item.year}-${item.month}-${item.day}`, time: `${item.hour}:${item.minute}` };
+}
+
+function moneyAmount(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function photoUrl(baseUrl: string, path: string): string {
   const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return new URL(path.replace(/^\//, ""), base).toString();
@@ -219,6 +270,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     logger: overrides.logger ?? false,
     repository: overrides.repository ?? new MemoryCatalogRepository(),
     authRepository: overrides.authRepository ?? new MemoryAuthRepository(),
+    bookingRepository: overrides.bookingRepository ?? new MemoryBookingRepository(),
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
     secureCookies: overrides.secureCookies ?? false,
   };
@@ -381,6 +433,175 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const current = await auth.authenticate(request.headers.authorization);
     if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
     return current.user;
+  });
+
+  app.patch<{ Body: ClientProfileBody }>("/v1/me", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "email", "phone", "city"],
+        properties: {
+          name: { type: "string", minLength: 2, maxLength: 100 },
+          email: { type: "string", minLength: 5, maxLength: 254 },
+          phone: { type: "string", minLength: 10, maxLength: 30 },
+          city: { type: "string", minLength: 2, maxLength: 100 },
+          currentPassword: { type: "string", minLength: 1, maxLength: 128 },
+          newPassword: { type: "string", minLength: 8, maxLength: 128 },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    const normalizedEmail = email(request.body.email);
+    const normalizedPhone = normalizeRussianPhone(request.body.phone);
+    if (!normalizedEmail) throw new ApiError(400, "INVALID_EMAIL", "Проверьте электронную почту.");
+    if (!normalizedPhone) throw new ApiError(400, "INVALID_PHONE", "Укажите российский номер телефона.");
+    if (request.body.newPassword && !request.body.currentPassword) {
+      throw new ApiError(400, "CURRENT_PASSWORD_REQUIRED", "Для смены пароля укажите текущий пароль.");
+    }
+    const updated = await auth.updateClientProfile(current.user.id, current.sessionId, {
+      name: request.body.name.trim(),
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      city: request.body.city.trim(),
+      ...(request.body.currentPassword ? { currentPassword: request.body.currentPassword } : {}),
+      ...(request.body.newPassword ? { newPassword: request.body.newPassword } : {}),
+    });
+    if (!updated) throw new ApiError(401, "CURRENT_PASSWORD_INVALID", "Текущий пароль не подходит.");
+    return updated;
+  });
+
+  app.get<{ Querystring: BookingQuery }>("/v1/bookings", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          statusGroup: { type: "string", enum: ["active", "completed", "cancelled", "all"] },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    return config.bookingRepository.listByClient(current.user.id, request.query.statusGroup ?? "all");
+  });
+
+  app.post<{ Body: BookingCreateBody }>("/v1/bookings", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["primaryRoomId", "roomIds", "startsAt", "durationMinutes", "guests", "legal"],
+        properties: {
+          primaryRoomId: { type: "string", minLength: 1, maxLength: 100 },
+          roomIds: { type: "array", minItems: 1, maxItems: 5, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+          startsAt: { type: "string", minLength: 20, maxLength: 40 },
+          durationMinutes: { type: "integer", minimum: 30, maximum: 1440, multipleOf: 30 },
+          guests: { type: "integer", minimum: 1, maximum: 1000 },
+          eventType: { type: ["string", "null"], maxLength: 100 },
+          eventName: { type: ["string", "null"], maxLength: 200 },
+          serviceIds: { type: "array", maxItems: 20, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+          onSitePaymentMethod: { type: "string", enum: ["card", "cash"] },
+          comment: { type: "string", maxLength: 2000 },
+          legal: {
+            type: "object",
+            additionalProperties: false,
+            required: ["termsVersion", "privacyVersion", "acceptedAt"],
+            properties: {
+              termsVersion: { type: "string", minLength: 1, maxLength: 100 },
+              privacyVersion: { type: "string", minLength: 1, maxLength: 100 },
+              acceptedAt: { type: "string", minLength: 20, maxLength: 40 },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    if (!current.user.phone) throw new ApiError(400, "CLIENT_PHONE_REQUIRED", "Добавьте телефон в личном кабинете перед бронированием.");
+    const body = request.body;
+    if (!body.roomIds.includes(body.primaryRoomId)) throw new ApiError(400, "PRIMARY_ROOM_REQUIRED", "Основное помещение должно входить в состав брони.");
+    const startsAt = new Date(body.startsAt);
+    if (!Number.isFinite(startsAt.getTime())) throw new ApiError(400, "INVALID_START", "Проверьте дату и время начала.");
+    if (startsAt.getTime() < Date.now()) throw new ApiError(400, "START_IN_PAST", "Нельзя создать заявку на прошедшее время.");
+    const acceptedAt = new Date(body.legal.acceptedAt);
+    if (!Number.isFinite(acceptedAt.getTime()) || acceptedAt.getTime() > Date.now() + 5 * 60 * 1000) {
+      throw new ApiError(400, "INVALID_CONSENT_DATE", "Не удалось подтвердить дату согласия.");
+    }
+    const localStart = moscowDateTime(startsAt);
+    const found = await Promise.all(body.roomIds.map((id) => config.repository.findRoom(id, localStart.date)));
+    if (found.some((room) => room === null)) throw new ApiError(404, "ROOM_NOT_FOUND", "Одно из помещений не найдено или временно скрыто.");
+    const selectedRooms = found as Room[];
+    const venueIds = new Set(selectedRooms.map((room) => room.venueId));
+    if (venueIds.size !== 1) throw new ApiError(400, "VENUE_MISMATCH", "В одной заявке можно выбрать помещения только одной площадки.");
+    if (body.durationMinutes < Math.max(...selectedRooms.map((room) => room.minimumHours * 60))) {
+      throw new ApiError(400, "MINIMUM_DURATION", "Выбранная длительность меньше минимальной для одного из помещений.");
+    }
+    const capacity = selectedRooms.reduce((sum, room) => sum + room.capacityMax, 0);
+    if (body.guests > capacity) throw new ApiError(400, "CAPACITY_EXCEEDED", `Для выбранных помещений доступно до ${capacity} гостей.`);
+    const windows = intersectAvailability(
+      selectedRooms.map((room) => availabilityForRoom(room, localStart.date, body.durationMinutes, localStart.time)),
+      body.durationMinutes,
+      localStart.time,
+    );
+    const selectedWindow = windows.find((window) => new Date(window.startsAt).getTime() === startsAt.getTime());
+    if (!selectedWindow) throw new ApiError(409, "SLOT_UNAVAILABLE", "Выбранное время уже недоступно. Выберите другое окно.", windows.slice(0, 6));
+    const venue = await config.repository.findVenue(selectedRooms[0]!.venueId);
+    if (!venue) throw new ApiError(404, "VENUE_NOT_FOUND", "Площадка не найдена или временно скрыта.");
+    const method = body.onSitePaymentMethod ?? venue.paymentMethods[0] ?? "card";
+    if (!venue.paymentMethods.includes(method)) throw new ApiError(400, "PAYMENT_METHOD_UNAVAILABLE", "Площадка не поддерживает выбранный способ оплаты остатка.");
+    const serviceIds = body.serviceIds ?? [];
+    const availableServices = new Map(selectedRooms.flatMap((room) => room.services.map((service) => [service.id, service] as const)));
+    const unknownService = serviceIds.find((id) => !availableServices.has(id));
+    if (unknownService) throw new ApiError(400, "SERVICE_NOT_FOUND", "Одна из дополнительных услуг больше недоступна.");
+    const hours = body.durationMinutes / 60;
+    const bookingRooms = selectedRooms.map((room) => ({
+      id: room.id,
+      slug: room.slug,
+      title: room.title,
+      type: room.type,
+      capacityMax: room.capacityMax,
+      pricePerHour: room.pricePerHour,
+      amount: moneyAmount(room.pricePerHour * hours),
+      isPrimary: room.id === body.primaryRoomId,
+    }));
+    const bookingServices = serviceIds.map((id) => {
+      const service = availableServices.get(id)!;
+      return { id: service.id, name: service.name, description: service.description, price: service.price, quantity: 1, amount: service.price };
+    });
+    const roomTotal = moneyAmount(bookingRooms.reduce((sum, room) => sum + room.amount, 0));
+    const serviceTotal = moneyAmount(bookingServices.reduce((sum, service) => sum + service.amount, 0));
+    const total = moneyAmount(roomTotal + serviceTotal);
+    const prepayment = Math.ceil(total * 0.3);
+    const commission = Math.ceil(total * 0.15);
+    const endsAt = new Date(startsAt.getTime() + body.durationMinutes * 60 * 1000).toISOString();
+    const booking = await config.bookingRepository.create({
+      clientId: current.user.id,
+      clientName: current.user.name,
+      clientPhone: current.user.phone,
+      clientEmail: current.user.email,
+      venue,
+      rooms: bookingRooms,
+      services: bookingServices,
+      startsAt: startsAt.toISOString(),
+      endsAt,
+      guests: body.guests,
+      eventType: body.eventType?.trim() || null,
+      eventName: body.eventName?.trim() || null,
+      onSitePaymentMethod: method,
+      comment: body.comment?.trim() ?? "",
+      money: { roomTotal, serviceTotal, total, prepayment, remainingOnSite: moneyAmount(total - prepayment), currency: "RUB" },
+      commission,
+      partnerAmount: moneyAmount(total - commission),
+      legal: { ...body.legal, acceptedAt: acceptedAt.toISOString() },
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null,
+    });
+    return reply.code(201).send(booking);
   });
 
   app.get<{ Params: CityParams }>("/v1/cities/:cityId/stats", {

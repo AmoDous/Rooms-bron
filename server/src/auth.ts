@@ -43,16 +43,26 @@ export interface AuthSessionRecord {
   revokedAt: string | null;
 }
 
+export interface ClientProfileUpdate {
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  passwordHash?: string;
+}
+
 export interface AuthRepository {
   readonly storage: "memory" | "postgresql";
   createClient(input: ClientRegistrationInput): Promise<AuthUser>;
   findUserByLogin(login: string, normalizedPhone: string | null): Promise<AuthUser | null>;
   findUserById(id: string): Promise<AuthUser | null>;
+  updateClientProfile(id: string, input: ClientProfileUpdate): Promise<AuthUser | null>;
   touchUser(id: string): Promise<void>;
   createSession(input: AuthSessionRecord & { ip: string | null; userAgent: string | null }): Promise<void>;
   findSession(id: string): Promise<AuthSessionRecord | null>;
   consumeSession(id: string, refreshTokenHash: string): Promise<AuthSessionRecord | null>;
   revokeSession(id: string): Promise<void>;
+  revokeOtherSessions(userId: string, exceptSessionId: string): Promise<void>;
 }
 
 export class AuthConflictError extends Error {
@@ -148,6 +158,26 @@ export class MemoryAuthRepository implements AuthRepository {
     return found ? structuredClone(found) : null;
   }
 
+  async updateClientProfile(id: string, input: ClientProfileUpdate): Promise<AuthUser | null> {
+    const current = this.users.get(id);
+    if (!current || current.role !== "client") return null;
+    const duplicate = [...this.users.values()].some((user) => user.id !== id && (
+      user.email?.toLocaleLowerCase("ru-RU") === input.email.toLocaleLowerCase("ru-RU") || user.phone === input.phone
+    ));
+    if (duplicate) throw new AuthConflictError();
+    const updated: AuthUser = {
+      ...current,
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      city: input.city,
+      passwordHash: input.passwordHash ?? current.passwordHash,
+      passwordResetRequired: input.passwordHash ? false : current.passwordResetRequired,
+    };
+    this.users.set(id, updated);
+    return structuredClone(updated);
+  }
+
   async touchUser(_id: string): Promise<void> {}
 
   async createSession(input: AuthSessionRecord): Promise<void> {
@@ -169,6 +199,13 @@ export class MemoryAuthRepository implements AuthRepository {
   async revokeSession(id: string): Promise<void> {
     const found = this.sessions.get(id);
     if (found) this.sessions.set(id, { ...found, revokedAt: new Date().toISOString() });
+  }
+
+  async revokeOtherSessions(userId: string, exceptSessionId: string): Promise<void> {
+    const revokedAt = new Date().toISOString();
+    for (const [id, session] of this.sessions) {
+      if (session.userId === userId && id !== exceptSessionId && session.revokedAt === null) this.sessions.set(id, { ...session, revokedAt });
+    }
   }
 }
 
@@ -223,6 +260,25 @@ export class PostgresAuthRepository implements AuthRepository {
     return result.rows[0] ? userFromRow(result.rows[0]) : null;
   }
 
+  async updateClientProfile(id: string, input: ClientProfileUpdate): Promise<AuthUser | null> {
+    try {
+      const result = await this.pool.query<UserRow>(`/* rooms:auth-update-client */
+        update users
+        set name = $2, email = $3, phone = $4, city = $5,
+          password_hash = coalesce($6, password_hash),
+          password_reset_required = case when $6::text is null then password_reset_required else false end,
+          last_active_at = now(), updated_at = now()
+        where id = $1::uuid and role = 'client'
+        returning id::text, role, name, email::text, phone, city, password_hash,
+          password_reset_required, blocked_at
+      `, [id, input.name, input.email, input.phone, input.city, input.passwordHash ?? null]);
+      return result.rows[0] ? userFromRow(result.rows[0]) : null;
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new AuthConflictError();
+      throw error;
+    }
+  }
+
   async touchUser(id: string): Promise<void> {
     await this.pool.query("update users set last_active_at = now(), updated_at = now() where id = $1::uuid", [id]);
   }
@@ -260,6 +316,14 @@ export class PostgresAuthRepository implements AuthRepository {
 
   async revokeSession(id: string): Promise<void> {
     await this.pool.query("update user_sessions set revoked_at = coalesce(revoked_at, now()) where id = $1::uuid", [id]);
+  }
+
+  async revokeOtherSessions(userId: string, exceptSessionId: string): Promise<void> {
+    await this.pool.query(`
+      update user_sessions
+      set revoked_at = coalesce(revoked_at, now())
+      where user_id = $1::uuid and id <> $2::uuid and revoked_at is null
+    `, [userId, exceptSessionId]);
   }
 
   private async insertConsent(client: PoolClient, userId: string, input: ClientRegistrationInput): Promise<void> {
@@ -362,6 +426,15 @@ export interface AuthenticatedUser {
   sessionId: string;
 }
 
+export interface ClientProfileChange {
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
 export class AuthService {
   private readonly dummyPasswordHash: Promise<string>;
 
@@ -405,6 +478,21 @@ export class AuthService {
     const user = await this.repository.findUserById(payload.sub);
     if (!user || user.blockedAt !== null || user.role !== payload.role) return null;
     return { user: publicUser(user), sessionId: session.id };
+  }
+
+  async updateClientProfile(userId: string, sessionId: string, input: ClientProfileChange): Promise<PublicUser | null> {
+    const current = await this.repository.findUserById(userId);
+    if (!current || current.role !== "client" || current.blockedAt !== null) return null;
+    let passwordHash: string | undefined;
+    if (input.newPassword) {
+      if (!input.currentPassword || !current.passwordHash || !await verifyPassword(input.currentPassword, current.passwordHash)) return null;
+      passwordHash = await hashPassword(input.newPassword);
+    }
+    const update: ClientProfileUpdate = { name: input.name, email: input.email, phone: input.phone, city: input.city };
+    if (passwordHash) update.passwordHash = passwordHash;
+    const updated = await this.repository.updateClientProfile(userId, update);
+    if (updated && passwordHash) await this.repository.revokeOtherSessions(userId, sessionId);
+    return updated ? publicUser(updated) : null;
   }
 
   async logout(authorization: string | undefined, refreshToken: string | null): Promise<void> {

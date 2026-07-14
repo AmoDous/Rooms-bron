@@ -1,11 +1,13 @@
 import { Pool, type PoolConfig } from "pg";
 import { MemoryAuthRepository, PostgresAuthRepository, type AuthRepository } from "./auth.js";
+import { MemoryBookingRepository, PostgresBookingRepository, type BookingRepository } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { PostgresCatalogRepository } from "./postgresCatalog.js";
 
 export interface CatalogStorage {
   repository: CatalogRepository;
   authRepository: AuthRepository;
+  bookingRepository: BookingRepository;
   close(): Promise<void>;
 }
 
@@ -41,6 +43,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     return {
       repository: new MemoryCatalogRepository(),
       authRepository: new MemoryAuthRepository(),
+      bookingRepository: new MemoryBookingRepository(),
       close: async () => undefined,
     };
   }
@@ -54,6 +57,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
   return {
     repository: new PostgresCatalogRepository(pool),
     authRepository: new PostgresAuthRepository(pool),
+    bookingRepository: new PostgresBookingRepository(pool),
     close: () => pool.end(),
   };
 }

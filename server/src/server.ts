@@ -26,6 +26,7 @@ const app = buildApp({
   logger: true,
   repository: storage.repository,
   authRepository: storage.authRepository,
+  bookingRepository: storage.bookingRepository,
   authTokenSecret: authTokenSecret || "rooms-local-development-secret-change-me-2026",
   secureCookies,
 });

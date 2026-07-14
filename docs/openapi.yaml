@@ -235,6 +235,28 @@ paths:
                 $ref: '#/components/schemas/User'
         '401':
           $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Client]
+      operationId: updateCurrentUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientProfileUpdate'
+      responses:
+        '200':
+          description: Updated client profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /v1/me/notification-settings:
     get:
@@ -678,6 +700,17 @@ components:
         city: {type: [string, 'null']}
         passwordResetRequired: {type: boolean}
 
+    ClientProfileUpdate:
+      type: object
+      required: [name, email, phone, city]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        email: {type: string, format: email}
+        phone: {type: string}
+        city: {type: string}
+        currentPassword: {type: string, description: Required only when newPassword is supplied.}
+        newPassword: {type: string, minLength: 8, maxLength: 128}
+
     AuthSession:
       type: object
       required: [user, accessToken, expiresIn]
@@ -875,6 +908,30 @@ components:
         remainingOnSite: {type: number}
         currency: {type: string, const: RUB}
 
+    BookingRoom:
+      type: object
+      required: [id, slug, title, type, capacityMax, pricePerHour, amount, isPrimary]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        title: {type: string}
+        type: {type: string}
+        capacityMax: {type: integer, minimum: 1}
+        pricePerHour: {type: number, minimum: 0}
+        amount: {type: number, minimum: 0}
+        isPrimary: {type: boolean}
+
+    BookingService:
+      type: object
+      required: [id, name, price, quantity, amount]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: [string, 'null']}
+        price: {type: number, minimum: 0}
+        quantity: {type: integer, minimum: 1}
+        amount: {type: number, minimum: 0}
+
     Booking:
       type: object
       required: [id, publicNumber, status, venue, rooms, startsAt, endsAt, guests, money]
@@ -883,15 +940,18 @@ components:
         publicNumber: {type: string}
         status: {type: string, enum: [pending, proposed, awaiting_payment, paid, expired, cancelled, visited, completed]}
         venue: {$ref: '#/components/schemas/Venue'}
-        rooms: {type: array, items: {$ref: '#/components/schemas/RoomSummary'}}
+        rooms: {type: array, items: {$ref: '#/components/schemas/BookingRoom'}}
         startsAt: {type: string, format: date-time}
         endsAt: {type: string, format: date-time}
         guests: {type: integer}
         clientName: {type: string}
         clientPhone: {type: [string, 'null'], description: Null for partner before prepayment}
+        clientEmail: {type: [string, 'null'], format: email}
         eventType: {type: [string, 'null']}
         eventName: {type: [string, 'null']}
-        services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+        onSitePaymentMethod: {type: string, enum: [card, cash]}
+        comment: {type: string}
+        services: {type: array, items: {$ref: '#/components/schemas/BookingService'}}
         money: {$ref: '#/components/schemas/MoneyBreakdown'}
         paymentHoldExpiresAt: {type: [string, 'null'], format: date-time}
         createdAt: {type: string, format: date-time}
