@@ -6,6 +6,7 @@ import { hashPassword, MemoryAuthRepository } from "../src/auth.js";
 import { availabilityForRoom } from "../src/availability.js";
 import { MemoryBookingRepository } from "../src/bookings.js";
 import { demoVenues, MemoryCatalogRepository, roomIds, venueIds } from "../src/catalog.js";
+import { MemoryPartnerCatalogRepository } from "../src/partnerCatalog.js";
 import type { Room } from "../src/types.js";
 
 let app: FastifyInstance;
@@ -360,6 +361,181 @@ test("partner queue holds one conflicting booking for 15 minutes and hides the c
   assert.equal(confirmedAfterExpiry.statusCode, 200);
   assert.equal(confirmedAfterExpiry.json().status, "awaiting_payment");
   await partnerApp.close();
+});
+
+test("partner catalog persists operational settings and keeps public edits in moderation", async () => {
+  const partnerId = "50000000-0000-4000-8000-000000000021";
+  const partnerPassword = "rooms2026";
+  const authRepository = new MemoryAuthRepository([{
+    id: partnerId,
+    role: "partner",
+    name: "Редактор Kids Loft",
+    email: "catalog@kids-loft.ru",
+    phone: null,
+    city: "Воронеж",
+    passwordHash: await hashPassword(partnerPassword),
+    passwordResetRequired: false,
+    blockedAt: null,
+  }]);
+  const venue = demoVenues.find((item) => item.id === venueIds.kidsLoft)!;
+  const bookingRepository = new MemoryBookingRepository({ partners: [{ userId: partnerId, venue }] });
+  const partnerCatalogRepository = new MemoryPartnerCatalogRepository();
+  const catalogApp = buildApp({ logger: false, authRepository, bookingRepository, partnerCatalogRepository });
+  await catalogApp.ready();
+  const login = await catalogApp.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "catalog@kids-loft.ru", password: partnerPassword },
+  });
+  assert.equal(login.statusCode, 200);
+  const headers = { authorization: `Bearer ${login.json().accessToken as string}` };
+  const unauthenticated = await catalogApp.inject({ method: "GET", url: "/v1/partner/rooms" });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const weekSchedule = Array.from({ length: 7 }, (_, index) => ({
+    weekday: index + 1,
+    enabled: index !== 0,
+    opensAtHour: 10,
+    closesAtHour: index >= 4 ? 26 : 24,
+  }));
+  const venueUpdate = await catalogApp.inject({
+    method: "PATCH",
+    url: "/v1/partner/venue",
+    headers,
+    payload: {
+      title: "Kids Loft на Маркса",
+      city: "Воронеж",
+      address: venue.address,
+      venueType: "Детский лофт",
+      description: venue.description,
+      rules: venue.rules,
+      contactName: "Марина",
+      contactPhone: "+7 900 123-45-67",
+      contactEmail: "catalog@kids-loft.ru",
+      amenities: venue.amenities,
+      paymentMethods: ["card", "cash"],
+      weekSchedule,
+    },
+  });
+  assert.equal(venueUpdate.statusCode, 202);
+  assert.equal(venueUpdate.json().title, "Kids Loft");
+  assert.equal(venueUpdate.json().contactName, "Марина");
+  assert.equal(venueUpdate.json().weekSchedule[0].enabled, false);
+  assert.equal(venueUpdate.json().pendingChange.proposedData.title, "Kids Loft на Маркса");
+
+  const roomsBefore = await catalogApp.inject({ method: "GET", url: "/v1/partner/rooms", headers });
+  assert.equal(roomsBefore.statusCode, 200);
+  assert.equal(roomsBefore.json().length, 2);
+  const kosmos = roomsBefore.json().find((item: { id: string }) => item.id === roomIds.kosmos);
+  const roomUpdate = await catalogApp.inject({
+    method: "PATCH",
+    url: `/v1/partner/rooms/${roomIds.kosmos}`,
+    headers,
+    payload: {
+      title: "Космос Premium",
+      subtitle: kosmos.subtitle,
+      type: kosmos.type,
+      description: kosmos.description,
+      rules: kosmos.rules,
+      promotion: kosmos.promotion ?? "",
+      capacityMin: kosmos.capacityMin,
+      capacityMax: 16,
+      pricePerHour: 1900,
+      minimumHours: 3,
+      bufferMinutes: 30,
+      opensAtHour: 11,
+      closesAtHour: 25,
+      features: kosmos.features,
+      tags: kosmos.tags,
+      services: kosmos.services,
+      status: "published",
+    },
+  });
+  assert.equal(roomUpdate.statusCode, 200);
+  assert.equal(roomUpdate.json().title, "Комната Космос");
+  assert.equal(roomUpdate.json().minimumHours, 3);
+  assert.equal(roomUpdate.json().bufferMinutes, 30);
+  assert.equal(roomUpdate.json().pendingChange.proposedData.title, "Космос Premium");
+
+  const exception = await catalogApp.inject({
+    method: "PUT",
+    url: "/v1/partner/schedule-exceptions/2026-08-15",
+    headers,
+    payload: { mode: "custom", opensAtHour: 12, closesAtHour: 22, note: "Сокращённый день" },
+  });
+  assert.equal(exception.statusCode, 200);
+  assert.deepEqual(exception.json().scheduleExceptions[0], {
+    date: "2026-08-15",
+    mode: "custom",
+    opensAtHour: 12,
+    closesAtHour: 22,
+    note: "Сокращённый день",
+  });
+  const resetException = await catalogApp.inject({
+    method: "DELETE",
+    url: "/v1/partner/schedule-exceptions/2026-08-15",
+    headers,
+  });
+  assert.equal(resetException.statusCode, 200);
+  assert.equal(resetException.json().scheduleExceptions.length, 0);
+
+  const createdRoom = await catalogApp.inject({
+    method: "POST",
+    url: "/v1/partner/rooms",
+    headers,
+    payload: {
+      title: "Творческая студия",
+      subtitle: "Детская комната",
+      type: "kids",
+      description: "Отдельное светлое помещение для мастер-классов и праздников.",
+      rules: "Еду и декор нужно согласовать заранее.",
+      promotion: "",
+      capacityMin: 1,
+      capacityMax: 12,
+      pricePerHour: 1700,
+      minimumHours: 2,
+      bufferMinutes: 15,
+      opensAtHour: 10,
+      closesAtHour: 23,
+      features: ["kids", "food"],
+      tags: ["мастер-класс"],
+      services: [{ name: "Аниматор", description: "Программа на один час", price: 2500 }],
+      status: "review",
+    },
+  });
+  assert.equal(createdRoom.statusCode, 202);
+  assert.equal(createdRoom.json().publicationStatus, "review");
+  assert.match(createdRoom.json().services[0].id, /^[0-9a-f-]{36}$/u);
+  assert.equal(createdRoom.json().pendingChange.proposedData.publicationRequested, true);
+  const roomsAfter = await catalogApp.inject({ method: "GET", url: "/v1/partner/rooms", headers });
+  assert.equal(roomsAfter.json().length, 3);
+
+  const wrongVenueRoom = await catalogApp.inject({
+    method: "PATCH",
+    url: `/v1/partner/rooms/${roomIds.voiceVip}`,
+    headers,
+    payload: {
+      title: "Чужая комната",
+      subtitle: "Караоке",
+      type: "karaoke",
+      description: "Эта комната принадлежит другой площадке и не должна измениться.",
+      rules: "Правила другой площадки.",
+      promotion: "",
+      capacityMin: 1,
+      capacityMax: 8,
+      pricePerHour: 2000,
+      minimumHours: 2,
+      bufferMinutes: 0,
+      opensAtHour: 10,
+      closesAtHour: 24,
+      features: ["karaoke"],
+      tags: ["караоке"],
+      services: [],
+      status: "published",
+    },
+  });
+  assert.equal(wrongVenueRoom.statusCode, 404);
+  await catalogApp.close();
 });
 
 test("booking conversation persists messages and lets the client accept a partner time proposal", async () => {

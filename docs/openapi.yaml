@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.2.0
+  version: 0.3.0
   description: |
-    Draft contract for the Rooms MVP backend. The current GitHub Pages build is
-    still a frontend prototype and does not serve these endpoints.
+    Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
+    the local Fastify service provides PostgreSQL-backed API endpoints.
 servers:
-  - url: http://localhost:3000
+  - url: http://localhost:3001
     description: Local development
   - url: https://api.rooms.example
     description: Production placeholder
@@ -562,7 +562,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Venue'
+                $ref: '#/components/schemas/PartnerVenue'
     patch:
       tags: [Partner]
       operationId: updatePartnerVenue
@@ -573,11 +573,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
+              $ref: '#/components/schemas/PartnerVenueWrite'
       responses:
         '202':
           description: Immediate fields applied and critical fields sent to moderation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerVenue'
 
   /v1/partner/rooms:
     get:
@@ -593,7 +596,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/RoomDetail'
+                  $ref: '#/components/schemas/PartnerRoom'
     post:
       tags: [Partner]
       operationId: createPartnerRoom
@@ -604,10 +607,72 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RoomWrite'
+              $ref: '#/components/schemas/PartnerRoomWrite'
       responses:
         '202':
           description: Room draft created and sent to moderation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerRoom'
+
+  /v1/partner/rooms/{roomId}:
+    patch:
+      tags: [Partner]
+      operationId: updatePartnerRoom
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: roomId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerRoomWrite'
+      responses:
+        '200':
+          description: Operational settings applied and public changes sent to moderation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerRoom'
+
+  /v1/partner/schedule-exceptions/{date}:
+    put:
+      tags: [Partner]
+      operationId: setPartnerScheduleException
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: date, in: path, required: true, schema: {type: string, format: date}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerScheduleExceptionWrite'
+      responses:
+        '200':
+          description: Date-specific schedule saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerVenue'
+    delete:
+      tags: [Partner]
+      operationId: deletePartnerScheduleException
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: date, in: path, required: true, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: Weekly schedule restored for the date
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerVenue'
 
   /v1/partner/reservations:
     get:
@@ -1031,6 +1096,157 @@ components:
         publicationStatus: {type: string, enum: [review, published, hidden]}
         partnerMode: {type: string, enum: [catalog, crm]}
         paymentMethods: {type: array, items: {type: string, enum: [card, cash]}}
+
+    PartnerWeekScheduleDay:
+      type: object
+      required: [weekday, enabled, opensAtHour, closesAtHour]
+      properties:
+        weekday: {type: integer, minimum: 1, maximum: 7}
+        enabled: {type: boolean}
+        opensAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        closesAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
+
+    PartnerScheduleException:
+      type: object
+      required: [date, mode, opensAtHour, closesAtHour, note]
+      properties:
+        date: {type: string, format: date}
+        mode: {type: string, enum: [closed, custom]}
+        opensAtHour: {type: [number, 'null']}
+        closesAtHour: {type: [number, 'null']}
+        note: {type: string}
+
+    PartnerModerationChange:
+      type: object
+      required: [id, fields, beforeData, proposedData, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        fields: {type: array, items: {type: string}}
+        beforeData: {type: object, additionalProperties: true}
+        proposedData: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+
+    PartnerVenue:
+      allOf:
+        - $ref: '#/components/schemas/Venue'
+        - type: object
+          required: [venueType, contactName, contactPhone, contactEmail, weekSchedule, scheduleExceptions]
+          properties:
+            venueType: {type: string}
+            contactName: {type: string}
+            contactPhone: {type: string}
+            contactEmail: {type: string}
+            weekSchedule:
+              type: array
+              items: {$ref: '#/components/schemas/PartnerWeekScheduleDay'}
+            scheduleExceptions:
+              type: array
+              items: {$ref: '#/components/schemas/PartnerScheduleException'}
+            pendingChange:
+              oneOf:
+                - $ref: '#/components/schemas/PartnerModerationChange'
+                - type: 'null'
+
+    PartnerVenueWrite:
+      type: object
+      additionalProperties: false
+      required: [title, city, address, venueType, description, rules, contactName, contactPhone, contactEmail, amenities, paymentMethods, weekSchedule]
+      properties:
+        title: {type: string, minLength: 2, maxLength: 160}
+        city: {type: string, minLength: 2, maxLength: 100}
+        address: {type: string, minLength: 3, maxLength: 300}
+        venueType: {type: string, minLength: 2, maxLength: 120}
+        description: {type: string, minLength: 10, maxLength: 5000}
+        rules: {type: string, maxLength: 5000}
+        contactName: {type: string, minLength: 2, maxLength: 120}
+        contactPhone: {type: string, minLength: 6, maxLength: 30}
+        contactEmail: {type: string, maxLength: 320}
+        amenities: {type: array, maxItems: 50, items: {type: string}}
+        paymentMethods:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [card, cash]}
+        weekSchedule:
+          type: array
+          minItems: 7
+          maxItems: 7
+          items: {$ref: '#/components/schemas/PartnerWeekScheduleDay'}
+
+    PartnerScheduleExceptionWrite:
+      type: object
+      additionalProperties: false
+      required: [mode, opensAtHour, closesAtHour, note]
+      properties:
+        mode: {type: string, enum: [closed, custom]}
+        opensAtHour: {type: [number, 'null'], minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        closesAtHour: {type: [number, 'null'], minimum: 0.5, maximum: 30, multipleOf: 0.5}
+        note: {type: string, maxLength: 500}
+
+    PartnerRoom:
+      type: object
+      required: [id, slug, venueId, title, subtitle, type, capacityMin, capacityMax, pricePerHour, minimumHours, description, rules, features, tags, photoPaths, services, opensAtHour, closesAtHour, bufferMinutes, publicationStatus]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        venueId: {type: string, format: uuid}
+        title: {type: string}
+        subtitle: {type: string}
+        type: {type: string}
+        capacityMin: {type: integer, minimum: 1}
+        capacityMax: {type: integer, minimum: 1}
+        pricePerHour: {type: number, minimum: 0}
+        minimumHours: {type: number, minimum: 0.5, multipleOf: 0.5}
+        rating: {type: number, minimum: 0, maximum: 5}
+        reviewCount: {type: integer, minimum: 0}
+        description: {type: string}
+        rules: {type: string}
+        promotion: {type: [string, 'null']}
+        features: {type: array, items: {type: string}}
+        tags: {type: array, items: {type: string}}
+        photoPaths: {type: array, items: {type: string}}
+        services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+        opensAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        closesAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
+        bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
+        publicationStatus: {type: string, enum: [review, published, hidden]}
+        pendingChange:
+          oneOf:
+            - $ref: '#/components/schemas/PartnerModerationChange'
+            - type: 'null'
+
+    PartnerRoomWrite:
+      type: object
+      additionalProperties: false
+      required: [title, subtitle, type, description, rules, promotion, capacityMin, capacityMax, pricePerHour, minimumHours, bufferMinutes, opensAtHour, closesAtHour, features, tags, services, status]
+      properties:
+        title: {type: string, minLength: 2, maxLength: 160}
+        subtitle: {type: string, minLength: 2, maxLength: 160}
+        type: {type: string, minLength: 2, maxLength: 80}
+        description: {type: string, minLength: 10, maxLength: 5000}
+        rules: {type: string, maxLength: 5000}
+        promotion: {type: string, maxLength: 2000}
+        capacityMin: {type: integer, minimum: 1, maximum: 1000}
+        capacityMax: {type: integer, minimum: 1, maximum: 1000}
+        pricePerHour: {type: number, minimum: 0}
+        minimumHours: {type: number, minimum: 0.5, maximum: 24, multipleOf: 0.5}
+        bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
+        opensAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        closesAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
+        features: {type: array, maxItems: 50, uniqueItems: true, items: {type: string}}
+        tags: {type: array, maxItems: 50, uniqueItems: true, items: {type: string}}
+        services:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [name, description, price]
+            properties:
+              id: {type: string}
+              name: {type: string}
+              description: {type: string}
+              price: {type: number, minimum: 0}
+        status: {type: string, enum: [review, published, hidden]}
 
     RoomSummary:
       type: object

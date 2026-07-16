@@ -8,6 +8,13 @@ import { MemoryBookingRepository, type BookingRepository, type BookingStatusGrou
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { MemoryPaymentRepository, type PaymentRepository } from "./payments.js";
 import {
+  MemoryPartnerCatalogRepository,
+  type PartnerCatalogRepository,
+  type PartnerRoomWrite,
+  type PartnerScheduleExceptionWrite,
+  type PartnerVenueWrite,
+} from "./partnerCatalog.js";
+import {
   MemoryPartnerReservationRepository,
   type ManualReservationSource,
   type PartnerReservationInput,
@@ -35,6 +42,7 @@ interface AppConfig {
   bookingRepository: BookingRepository;
   paymentRepository: PaymentRepository;
   reservationRepository: PartnerReservationRepository;
+  partnerCatalogRepository: PartnerCatalogRepository;
   authTokenSecret: string;
   secureCookies: boolean;
   enableDemoPayments: boolean;
@@ -180,6 +188,14 @@ interface ReservationCancelBody {
   reason: string;
 }
 
+interface PartnerRoomParams {
+  roomId: string;
+}
+
+interface PartnerScheduleDateParams {
+  date: string;
+}
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const assetContentTypes: Readonly<Record<string, string>> = {
   jpg: "image/jpeg",
@@ -211,6 +227,98 @@ const reservationParamsSchema = {
   additionalProperties: false,
   required: ["reservationId"],
   properties: { reservationId: { type: "string", minLength: 36, maxLength: 36 } },
+} as const;
+const partnerWeekScheduleDaySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["weekday", "enabled", "opensAtHour", "closesAtHour"],
+  properties: {
+    weekday: { type: "integer", minimum: 1, maximum: 7 },
+    enabled: { type: "boolean" },
+    opensAtHour: { type: "number", minimum: 0, maximum: 23.5, multipleOf: 0.5 },
+    closesAtHour: { type: "number", minimum: 0.5, maximum: 30, multipleOf: 0.5 },
+  },
+} as const;
+const partnerVenueWriteSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "title", "city", "address", "venueType", "description", "rules", "contactName", "contactPhone",
+    "contactEmail", "amenities", "paymentMethods", "weekSchedule",
+  ],
+  properties: {
+    title: { type: "string", minLength: 2, maxLength: 160 },
+    city: { type: "string", minLength: 2, maxLength: 100 },
+    address: { type: "string", minLength: 3, maxLength: 300 },
+    venueType: { type: "string", minLength: 2, maxLength: 120 },
+    description: { type: "string", minLength: 10, maxLength: 5000 },
+    rules: { type: "string", maxLength: 5000 },
+    contactName: { type: "string", minLength: 2, maxLength: 120 },
+    contactPhone: { type: "string", minLength: 6, maxLength: 30 },
+    contactEmail: { type: "string", maxLength: 320 },
+    amenities: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 100 } },
+    paymentMethods: {
+      type: "array", minItems: 1, maxItems: 2, uniqueItems: true,
+      items: { type: "string", enum: ["card", "cash"] },
+    },
+    weekSchedule: { type: "array", minItems: 7, maxItems: 7, items: partnerWeekScheduleDaySchema },
+  },
+} as const;
+const partnerRoomWriteSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "title", "subtitle", "type", "description", "rules", "promotion", "capacityMin", "capacityMax",
+    "pricePerHour", "minimumHours", "bufferMinutes", "opensAtHour", "closesAtHour", "features", "tags",
+    "services", "status",
+  ],
+  properties: {
+    title: { type: "string", minLength: 2, maxLength: 160 },
+    subtitle: { type: "string", minLength: 2, maxLength: 160 },
+    type: { type: "string", minLength: 2, maxLength: 80 },
+    description: { type: "string", minLength: 10, maxLength: 5000 },
+    rules: { type: "string", maxLength: 5000 },
+    promotion: { type: "string", maxLength: 2000 },
+    capacityMin: { type: "integer", minimum: 1, maximum: 1000 },
+    capacityMax: { type: "integer", minimum: 1, maximum: 1000 },
+    pricePerHour: { type: "number", minimum: 0, maximum: 100_000_000 },
+    minimumHours: { type: "number", minimum: 0.5, maximum: 24, multipleOf: 0.5 },
+    bufferMinutes: { type: "integer", enum: [0, 15, 30, 45, 60] },
+    opensAtHour: { type: "number", minimum: 0, maximum: 23.5, multipleOf: 0.5 },
+    closesAtHour: { type: "number", minimum: 0.5, maximum: 30, multipleOf: 0.5 },
+    features: { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+    tags: { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+    services: {
+      type: "array", maxItems: 50,
+      items: {
+        type: "object", additionalProperties: false, required: ["name", "description", "price"],
+        properties: {
+          id: { type: "string", maxLength: 100 },
+          name: { type: "string", minLength: 1, maxLength: 160 },
+          description: { type: "string", maxLength: 1000 },
+          price: { type: "number", minimum: 0, maximum: 100_000_000 },
+        },
+      },
+    },
+    status: { type: "string", enum: ["review", "published", "hidden"] },
+  },
+} as const;
+const partnerScheduleDateParamsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["date"],
+  properties: { date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" } },
+} as const;
+const partnerScheduleExceptionWriteSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "opensAtHour", "closesAtHour", "note"],
+  properties: {
+    mode: { type: "string", enum: ["closed", "custom"] },
+    opensAtHour: { type: ["number", "null"], minimum: 0, maximum: 23.5, multipleOf: 0.5 },
+    closesAtHour: { type: ["number", "null"], minimum: 0.5, maximum: 30, multipleOf: 0.5 },
+    note: { type: "string", maxLength: 500 },
+  },
 } as const;
 
 class ApiError extends Error {
@@ -385,15 +493,17 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   const reservationRepository = overrides.reservationRepository
     ?? (bookingRepository instanceof MemoryBookingRepository ? new MemoryPartnerReservationRepository(bookingRepository, repository) : null);
   if (!reservationRepository) throw new Error("reservationRepository is required with a non-memory booking repository.");
+  const partnerCatalogRepository = overrides.partnerCatalogRepository ?? new MemoryPartnerCatalogRepository();
   const config: AppConfig = {
     publicSiteUrl: overrides.publicSiteUrl ?? "https://amodous.github.io/Rooms-bron",
-    corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
+    corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
     logger: overrides.logger ?? false,
     repository,
     authRepository: overrides.authRepository ?? new MemoryAuthRepository(),
     bookingRepository,
     paymentRepository,
     reservationRepository,
+    partnerCatalogRepository,
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
     secureCookies: overrides.secureCookies ?? false,
     enableDemoPayments: overrides.enableDemoPayments ?? true,
@@ -401,6 +511,34 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   const app = Fastify({ logger: config.logger });
   const auth = new AuthService(config.authRepository, config.authTokenSecret);
   const authAttempts = new AuthAttemptLimiter();
+
+  const requirePartnerVenue = async (authorization: string | undefined) => {
+    const current = await auth.authenticate(authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    const assigned = await config.bookingRepository.getPartnerVenue(current.user.id);
+    if (!assigned) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Для этого кабинета площадка ещё не назначена.");
+    return { actorId: current.user.id, venueId: assigned.id };
+  };
+
+  const validatePartnerVenueWrite = (body: PartnerVenueWrite) => {
+    const weekdays = new Set(body.weekSchedule.map((day) => day.weekday));
+    if (weekdays.size !== 7 || [...weekdays].some((weekday) => weekday < 1 || weekday > 7)) {
+      throw new ApiError(400, "INVALID_WEEK_SCHEDULE", "Укажите график для каждого дня недели.");
+    }
+    const invalid = body.weekSchedule.find((day) => day.enabled && day.closesAtHour <= day.opensAtHour);
+    if (invalid) throw new ApiError(400, "INVALID_WEEK_SCHEDULE", `В дне недели ${invalid.weekday} закрытие должно быть позже открытия.`);
+    return body;
+  };
+
+  const validatePartnerRoomWrite = (body: PartnerRoomWrite) => {
+    if (body.capacityMax < body.capacityMin) {
+      throw new ApiError(400, "INVALID_ROOM_CAPACITY", "Максимальная вместимость не может быть меньше минимальной.");
+    }
+    if (body.closesAtHour <= body.opensAtHour) {
+      throw new ApiError(400, "INVALID_ROOM_SCHEDULE", "Закрытие помещения должно быть позже открытия.");
+    }
+    return body;
+  };
 
   const withReservationBlocks = async (rooms: Room[], date: string): Promise<Room[]> => {
     if (config.repository.storage !== "memory" || !rooms.length) return rooms;
@@ -505,7 +643,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
 
   void app.register(cors, {
     origin: config.corsOrigins,
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   });
 
@@ -965,10 +1103,85 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   });
 
   app.get("/v1/partner/venue", async (request) => {
-    const current = await auth.authenticate(request.headers.authorization);
-    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
-    const venue = await config.bookingRepository.getPartnerVenue(current.user.id);
+    const { venueId } = await requirePartnerVenue(request.headers.authorization);
+    const venue = await config.partnerCatalogRepository.getVenue(venueId);
     if (!venue) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Для этого кабинета площадка ещё не назначена.");
+    return venue;
+  });
+
+  app.patch<{ Body: PartnerVenueWrite }>("/v1/partner/venue", {
+    schema: { body: partnerVenueWriteSchema },
+  }, async (request, reply) => {
+    const { actorId, venueId } = await requirePartnerVenue(request.headers.authorization);
+    const venue = await config.partnerCatalogRepository.updateVenue(venueId, actorId, validatePartnerVenueWrite(request.body));
+    if (!venue) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Площадка кабинета не найдена.");
+    return reply.code(202).send(venue);
+  });
+
+  app.get("/v1/partner/rooms", async (request) => {
+    const { venueId } = await requirePartnerVenue(request.headers.authorization);
+    return config.partnerCatalogRepository.listRooms(venueId);
+  });
+
+  app.post<{ Body: PartnerRoomWrite }>("/v1/partner/rooms", {
+    schema: { body: partnerRoomWriteSchema },
+  }, async (request, reply) => {
+    const { actorId, venueId } = await requirePartnerVenue(request.headers.authorization);
+    const room = await config.partnerCatalogRepository.createRoom(venueId, actorId, validatePartnerRoomWrite(request.body));
+    return reply.code(202).send(room);
+  });
+
+  app.patch<{ Params: PartnerRoomParams; Body: PartnerRoomWrite }>("/v1/partner/rooms/:roomId", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["roomId"],
+        properties: { roomId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: partnerRoomWriteSchema,
+    },
+  }, async (request) => {
+    const { actorId, venueId } = await requirePartnerVenue(request.headers.authorization);
+    const room = await config.partnerCatalogRepository.updateRoom(
+      venueId,
+      request.params.roomId,
+      actorId,
+      validatePartnerRoomWrite(request.body),
+    );
+    if (!room) throw new ApiError(404, "PARTNER_ROOM_NOT_FOUND", "Помещение не найдено в кабинете этой площадки.");
+    return room;
+  });
+
+  app.put<{ Params: PartnerScheduleDateParams; Body: PartnerScheduleExceptionWrite }>("/v1/partner/schedule-exceptions/:date", {
+    schema: { params: partnerScheduleDateParamsSchema, body: partnerScheduleExceptionWriteSchema },
+  }, async (request) => {
+    const { actorId, venueId } = await requirePartnerVenue(request.headers.authorization);
+    if (!isIsoDate(request.params.date)) throw new ApiError(400, "INVALID_DATE", "Проверьте дату особого графика.");
+    if (request.body.mode === "custom" && (
+      request.body.opensAtHour === null
+      || request.body.closesAtHour === null
+      || request.body.closesAtHour <= request.body.opensAtHour
+    )) {
+      throw new ApiError(400, "INVALID_SCHEDULE_EXCEPTION", "Для особых часов закрытие должно быть позже открытия.");
+    }
+    const venue = await config.partnerCatalogRepository.setScheduleException(
+      venueId,
+      actorId,
+      request.params.date,
+      request.body,
+    );
+    if (!venue) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Площадка кабинета не найдена.");
+    return venue;
+  });
+
+  app.delete<{ Params: PartnerScheduleDateParams }>("/v1/partner/schedule-exceptions/:date", {
+    schema: { params: partnerScheduleDateParamsSchema },
+  }, async (request) => {
+    const { actorId, venueId } = await requirePartnerVenue(request.headers.authorization);
+    if (!isIsoDate(request.params.date)) throw new ApiError(400, "INVALID_DATE", "Проверьте дату особого графика.");
+    const venue = await config.partnerCatalogRepository.deleteScheduleException(venueId, actorId, request.params.date);
+    if (!venue) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Площадка кабинета не найдена.");
     return venue;
   });
 

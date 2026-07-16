@@ -1081,7 +1081,7 @@
       {room:"voice-vip",name:"Ольга",rating:4,date:"май 2026",text:"Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось."},
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
-    const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname),localApiBase=localPreview?location.origin:"http://127.0.0.1:3000";
+    const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname),localApiBase=localPreview?location.origin:"http://127.0.0.1:3001";
     const apiState={base:apiQuery==="local"||localPreview?localApiBase:"",connected:false,storage:"",reviews:new Map(),accessToken:"",partnerBookingsLoaded:false};
     async function apiRequest(path,{method="GET",body,auth=false,retry=true}={}){
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3500);
@@ -1138,12 +1138,38 @@
       data.manualBusy=manualBusy;data.busy={};savePartnerData(data);applyPartnerData();return items||[];
     }
     async function syncPartnerApiReservations(){if(!apiState.connected||!apiState.accessToken)return [];return mergePartnerApiReservations(await apiRequest("/v1/partner/reservations?includeCancelled=true",{auth:true}))}
+    function localApiModerationData(type,value={}){
+      const rename=type==="venue"?{venueType:"type",description:"about"}:{description:"desc",promotion:"promo",capacityMax:"capacity",pricePerHour:"price"},result={};
+      Object.entries(value||{}).forEach(([key,item])=>{if(key==="publicationRequested"||key==="capacityMin")return;const target=rename[key]||key;result[target]=target==="services"&&Array.isArray(item)?item.map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})):item});
+      return result;
+    }
+    function syncApiPartnerModeration(targetType,targetId,targetTitle,change){
+      const list=moderationRequests().filter(item=>!(item.server===true&&item.targetType===targetType&&item.targetId===targetId));
+      if(!change)return saveModerationRequests(list);
+      const before=localApiModerationData(targetType,change.beforeData),after=localApiModerationData(targetType,change.proposedData),fields=moderationChangedFields(before,after);
+      saveModerationRequests([{id:change.id,targetType,targetId,targetTitle,kind:targetType==="room"&&!Object.keys(before).length?"create":"update",status:"pending",before,after,fields,created:change.createdAt,updated:change.createdAt,server:true},...list]);
+    }
     function syncApiPartnerVenue(venueData){
       mergeApiVenue(venueData);const auth=partnerAuthSession(),list=ensurePartnerAccounts(),currentAccount=list.find(item=>item.id===auth?.accountId||item.api===true),account=currentAccount?{...currentAccount,venueId:venueData.slug,venueTitle:venueData.title,status:"active",api:true}:currentAccount;
       if(account){savePartnerAccounts([account,...list.filter(item=>item.id!==account.id)]);write(store.partnerAuth,{...auth,accountId:account.id,verified:true,api:true})}
-      const data=partnerData();data.venue={...data.venue,id:venueData.slug,apiId:venueData.id,city:venueData.city,title:venueData.title,address:venueData.address,paymentMethods:venueData.paymentMethods,publicationStatus:venueData.publicationStatus,partnerMode:venueData.partnerMode};savePartnerData(data);return account;
+      const weekSchedule=Array.isArray(venueData.weekSchedule)?Object.fromEntries(venueData.weekSchedule.map((item,index)=>[weekDayOptions[Number(item.weekday)-1]?.[0]||weekDayOptions[index]?.[0],{enabled:item.enabled!==false,start:Number(item.opensAtHour),end:Number(item.closesAtHour)}]).filter(([key])=>key)):null;
+      const specialHours=Array.isArray(venueData.scheduleExceptions)?Object.fromEntries(venueData.scheduleExceptions.map(item=>[item.date,{mode:item.mode,...(item.mode==="custom"?{start:Number(item.opensAtHour),end:Number(item.closesAtHour)}:{}),note:item.note||""}])):null;
+      const data=partnerData();data.venue={...data.venue,id:venueData.slug,apiId:venueData.id,city:venueData.city,title:venueData.title,address:venueData.address,type:venueData.venueType||data.venue.type,about:venueData.description??data.venue.about,rules:venueData.rules??data.venue.rules,contact:venueData.contactName??data.venue.contact,phone:venueData.contactPhone??data.venue.phone,email:venueData.contactEmail??data.venue.email,amenities:Array.isArray(venueData.amenities)?venueData.amenities:data.venue.amenities,paymentMethods:venueData.paymentMethods,publicationStatus:venueData.publicationStatus,partnerMode:venueData.partnerMode,...(weekSchedule?{weekSchedule}:{}),...(specialHours?{specialHours}:{})};
+      const firstOpen=weekSchedule&&Object.values(weekSchedule).find(item=>item.enabled);if(firstOpen)data.venue.work=[firstOpen.start,firstOpen.end];
+      savePartnerData(data);syncApiPartnerModeration("venue",venueData.slug,venueData.title,venueData.pendingChange);return account;
     }
-    async function syncPartnerApiContext(){const venueData=await apiRequest("/v1/partner/venue",{auth:true});syncApiPartnerVenue(venueData);const [bookings,reservations]=await Promise.all([syncPartnerApiBookings(),syncPartnerApiReservations()]);return {bookings,reservations}}
+    function syncApiPartnerRooms(items=[]){
+      const data=partnerData(),localIds=[];
+      items.forEach(item=>{const live=rooms.find(room=>room.apiId===item.id||room.id===item.slug),id=live?.id||item.slug,old=data.rooms[id]||live||{},services=Array.isArray(item.services)?item.services.map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})):roomServices(old),images=Array.isArray(item.photoPaths)&&item.photoPaths.length?item.photoPaths:(old.images||live?.images||[roomImageForType(item.type)]);
+        data.rooms[id]={...old,id,apiId:item.id,type:item.type,status:item.publicationStatus,title:item.title,subtitle:item.subtitle||roomTypeLabel(item.type),capacity:Number(item.capacityMax)||1,price:Number(item.pricePerHour)||0,min:Number(item.minimumHours)||1,bufferEnabled:Number(item.bufferMinutes)>0,buffer:Number(item.bufferMinutes)||30,desc:item.description||"",rules:item.rules||"",promo:item.promotion||"",images,features:Array.isArray(item.features)?item.features:[],tags:Array.isArray(item.tags)?item.tags:tagsForType(item.type),services,work:[Number(item.opensAtHour),Number(item.closesAtHour)]};
+        syncApiPartnerModeration("room",id,item.title,item.pendingChange);localIds.push(id);
+      });
+      data.venue.roomCount=Object.keys(data.rooms).length||data.venue.roomCount;savePartnerData(data);applyPartnerData();return localIds;
+    }
+    async function syncPartnerApiContext(){
+      const [venueData,roomData]=await Promise.all([apiRequest("/v1/partner/venue",{auth:true}),apiRequest("/v1/partner/rooms",{auth:true})]);syncApiPartnerVenue(venueData);syncApiPartnerRooms(roomData);
+      const [bookings,reservations]=await Promise.all([syncPartnerApiBookings(),syncPartnerApiReservations()]);return {rooms:roomData,bookings,reservations};
+    }
     async function restoreApiSession(){
       const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null,partnerSession=partnerAuthSession();
       if((!session||(!session.source&&!account?.api))&&!partnerSession?.api)return null;
@@ -3542,7 +3568,7 @@
       savePartnerAccounts(ensurePartnerAccounts().map(x=>x.id===account.id?{...x,password,mustChangePassword:false,passwordChangedAt:new Date().toISOString()}:x));logActivity("partner_password","Партнёр сменил временный пароль",account.venueTitle,"partner");routePartnerAccount(currentPartnerAccount());toast("Новый пароль сохранён.");
     }
     function openPartner(){const account=currentPartnerAccount();if(account)return routePartnerAccount(account);if(location.hash===partnerRoute)history.replaceState(null,"",`${location.pathname}${location.search}`);renderPartnerLogin()}
-    function savePartnerVenue(form){
+    async function savePartnerVenue(form){
       const data=partnerData(),fd=new FormData(form);
       const paymentMethods=fd.getAll("paymentMethods").filter(x=>paymentMethodOptions.some(option=>option.value===x));
       if(!paymentMethods.length)return toast("Выберите хотя бы один способ оплаты остатка на площадке.");
@@ -3556,12 +3582,21 @@
       const publicBefore={city:data.venue.city,title:data.venue.title,address:data.venue.address,type:data.venue.type,rules:data.venue.rules,about:data.venue.about,paymentMethods:normalizePaymentMethods(data.venue.paymentMethods)};
       const publicAfter={city:String(fd.get("city")||"").trim(),title:String(fd.get("title")||"").trim(),address:String(fd.get("address")||"").trim(),type:String(fd.get("type")||"").trim(),rules:String(fd.get("rules")||"").trim(),about:String(fd.get("about")||"").trim(),paymentMethods};
       data.venue={...data.venue,roomCount:Number(fd.get("roomCount"))||partnerRoomIds(data).length||1,contact:String(fd.get("contact")||"").trim(),phone:String(fd.get("phone")||"").trim(),email:String(fd.get("email")||"").trim(),bankName:String(fd.get("bankName")||"").trim(),settlementAccount,bik,work,weekSchedule};
+      if(partnerApiEnabled()){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const result=await apiRequest("/v1/partner/venue",{method:"PATCH",auth:true,body:{title:publicAfter.title,city:publicAfter.city,address:publicAfter.address,venueType:publicAfter.type,description:publicAfter.about,rules:publicAfter.rules,contactName:data.venue.contact,contactPhone:data.venue.phone,contactEmail:data.venue.email,amenities:Array.isArray(data.venue.amenities)?data.venue.amenities:[],paymentMethods,weekSchedule:weekDayOptions.map(([key],index)=>({weekday:index+1,enabled:weekSchedule[key].enabled,opensAtHour:weekSchedule[key].start,closesAtHour:weekSchedule[key].end}))}});
+          savePartnerData(data);syncApiPartnerVenue(result);applyPartnerData();hydrate();renderPartnerCabinet(true);toast(result.pendingChange?"Изменения карточки отправлены на проверку. Контакты и расписание сохранены на сервере.":"Контакты и расписание сохранены на сервере.");
+        }catch(error){toast(error.message||"Не удалось сохранить заведение.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       savePartnerData(data);
       const request=queueModeration({targetType:"venue",targetId:data.venue.id,targetTitle:publicAfter.title||data.venue.title,before:publicBefore,after:publicAfter});
       logActivity(request?"venue_moderation":"venue_schedule",request?"Партнёр отправил данные площадки на проверку":"Партнёр обновил рабочие данные площадки",`${publicAfter.title||data.venue.title} · ${publicAfter.city||data.venue.city}`,"partner");
       applyPartnerData();hydrate();renderPartnerCabinet(true);toast(request?"Изменения карточки отправлены на проверку. Расписание и контакты уже сохранены.":"Расписание и контакты сохранены.");
     }
-    function savePartnerSpecialHours(form){
+    async function savePartnerSpecialHours(form){
       const data=partnerData(),fd=new FormData(form),date=String(fd.get("date")||""),mode=String(fd.get("mode")||"regular"),note=String(fd.get("note")||"").trim(),start=Number(fd.get("start")),end=Number(fd.get("end"));
       if(!date)return toast("Выберите дату.");
       if(mode==="custom"&&(!Number.isFinite(start)||!Number.isFinite(end)||end<=start))return toast("Особые часы указаны неверно. Для закрытия после полуночи используйте время с пометкой +1 день.");
@@ -3571,6 +3606,15 @@
         const conflict=active.find(b=>{let bookingStart=hour(b.time);if(end>24&&bookingStart<start)bookingStart+=24;return bookingStart<start||bookingStart+Number(b.hours||1)>end});
         if(conflict)return toast(`Особые часы пересекаются с заявкой ${conflict.id}. Сначала перенесите или отмените её.`);
       }
+      if(partnerApiEnabled()){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const result=mode==="regular"?await apiRequest(`/v1/partner/schedule-exceptions/${encodeURIComponent(date)}`,{method:"DELETE",auth:true}):await apiRequest(`/v1/partner/schedule-exceptions/${encodeURIComponent(date)}`,{method:"PUT",auth:true,body:{mode,opensAtHour:mode==="custom"?start:null,closesAtHour:mode==="custom"?end:null,note}});
+          state.partnerDate=date;syncApiPartnerVenue(result);logActivity(mode==="regular"?"schedule_reset":"schedule_exception",mode==="regular"?"Партнёр вернул обычный график":"Партнёр изменил график даты",`${date} · ${mode==="closed"?"не работаем":mode==="custom"?intervalText(start,end):"обычный график"}${note?` · ${note}`:""}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast(mode==="regular"?"Для даты снова действует недельный график.":"Особый график даты сохранён на сервере.");
+        }catch(error){toast(error.message||"Не удалось сохранить график даты.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       const specialHours={...(data.venue.specialHours||{})};
       if(mode==="regular")delete specialHours[date];
       else specialHours[date]={mode,...(mode==="custom"?{start,end}:{}),note};
@@ -3578,7 +3622,7 @@
       state.partnerDate=date;
       savePartnerData(data);logActivity(mode==="regular"?"schedule_reset":"schedule_exception",mode==="regular"?"Партнёр вернул обычный график":"Партнёр изменил график даты",`${date} · ${mode==="closed"?"не работаем":mode==="custom"?intervalText(start,end):"обычный график"}${note?` · ${note}`:""}`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast(mode==="regular"?"Для даты снова действует недельный график.":"Особый график даты сохранён.");
     }
-    function createPartnerRoom(form){
+    async function createPartnerRoom(form){
       const data=partnerData(),fd=new FormData(form),type=fd.get("type")||"lounge",id=`partner-${Date.now().toString(36)}`;
       const title=String(fd.get("title")||"").trim();
       if(!title)return toast("Введите название помещения.");
@@ -3600,12 +3644,21 @@
         services:defaultServicesForType(type),
         work
       };
+      if(partnerApiEnabled()){
+        const submit=form.querySelector('[type="submit"]'),draft=data.rooms[id];if(submit)submit.disabled=true;
+        try{
+          const result=await apiRequest("/v1/partner/rooms",{method:"POST",auth:true,body:{title:draft.title,subtitle:draft.subtitle,type:draft.type,description:draft.desc,rules:draft.rules,promotion:draft.promo||"",capacityMin:1,capacityMax:draft.capacity,pricePerHour:draft.price,minimumHours:draft.min,bufferMinutes:draft.bufferEnabled?draft.buffer:0,opensAtHour:draft.work[0],closesAtHour:draft.work[1],features:draft.features,tags:draft.tags,services:roomServices(draft).map(service=>({id:service.id,name:service.name,description:service.desc||"",price:service.price})),status:"review"}});
+          const [localId]=syncApiPartnerRooms([result]);state.partnerRoom=localId||result.slug;hydrate();renderPartnerCabinet(true);toast("Помещение сохранено на сервере и отправлено на проверку Rooms.");
+        }catch(error){toast(error.message||"Не удалось добавить помещение.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       state.partnerRoom=id;savePartnerData(data);
       const draft=data.rooms[id];
       queueModeration({targetType:"room",targetId:id,targetTitle:title,before:{},after:{type:draft.type,status:"review",title:draft.title,subtitle:draft.subtitle,capacity:draft.capacity,price:draft.price,desc:draft.desc,rules:draft.rules,promo:draft.promo,images:draft.images,features:draft.features,tags:draft.tags,services:draft.services},kind:"create"});
       logActivity("room_create","Партнёр добавил помещение на проверку",title,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast("Помещение создано и отправлено на проверку Rooms.");
     }
-    function savePartnerRoom(form){
+    async function savePartnerRoom(form){
       const data=partnerData(),fd=new FormData(form),id=form.dataset.roomId;
       const current=data.rooms[id],type=fd.get("type")||current?.type||"lounge";
       const work=[Number(fd.get("workStart"))||10,Number(fd.get("workEnd"))||24];
@@ -3613,6 +3666,15 @@
       const publicBefore={type:current.type,status:current.status,title:current.title,subtitle:current.subtitle,capacity:current.capacity,price:current.price,desc:current.desc,rules:current.rules,promo:current.promo||"",features:current.features||[],tags:current.tags||[],services:roomServices(current)};
       const requestedStatus=String(fd.get("status")||current.status||"published"),publicAfter={type,status:requestedStatus,title:String(fd.get("title")||"").trim(),subtitle:String(fd.get("subtitle")||roomTypeLabel(type)).trim(),capacity:Number(fd.get("capacity")),price:Number(fd.get("price")),desc:String(fd.get("desc")||"").trim(),rules:String(fd.get("rules")||"").trim(),promo:String(fd.get("promo")||"").trim(),features:fd.getAll("features"),tags:tagsForType(type),services:servicesFromForm(fd)};
       data.rooms[id]={...current,status:requestedStatus==="hidden"?"hidden":current.status,min:Number(fd.get("min")),bufferEnabled:fd.get("bufferEnabled")==="1",buffer:Number(fd.get("buffer"))||30,work};
+      if(partnerApiEnabled()){
+        const submit=form.querySelector('[type="submit"]'),apiId=current.apiId||rooms.find(item=>item.id===id)?.apiId||id;if(submit)submit.disabled=true;
+        try{
+          const result=await apiRequest(`/v1/partner/rooms/${encodeURIComponent(apiId)}`,{method:"PATCH",auth:true,body:{title:publicAfter.title,subtitle:publicAfter.subtitle,type:publicAfter.type,description:publicAfter.desc,rules:publicAfter.rules,promotion:publicAfter.promo,capacityMin:1,capacityMax:publicAfter.capacity,pricePerHour:publicAfter.price,minimumHours:data.rooms[id].min,bufferMinutes:data.rooms[id].bufferEnabled?data.rooms[id].buffer:0,opensAtHour:work[0],closesAtHour:work[1],features:publicAfter.features,tags:publicAfter.tags,services:publicAfter.services.map(service=>({id:service.id,name:service.name,description:service.desc||"",price:service.price})),status:requestedStatus}});
+          syncApiPartnerRooms([result]);state.partnerRoom=id;hydrate();renderPartnerCabinet(true);toast(result.pendingChange?"Изменения помещения сохранены и отправлены на проверку Rooms.":"Рабочие настройки помещения сохранены на сервере.");
+        }catch(error){toast(error.message||"Не удалось сохранить помещение.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       state.partnerRoom=id;savePartnerData(data);
       const request=queueModeration({targetType:"room",targetId:id,targetTitle:publicAfter.title||current.title,before:publicBefore,after:publicAfter});
       logActivity(request?"room_moderation":"room_schedule",request?"Партнёр отправил помещение на проверку":"Партнёр обновил рабочие настройки помещения",`${publicAfter.title} · ${money(publicAfter.price)}/час`,"partner");applyPartnerData();hydrate();renderPartnerCabinet(true);toast(request?"Изменения помещения отправлены на проверку. График и буфер уже сохранены.":"График и буфер помещения сохранены.");

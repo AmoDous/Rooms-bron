@@ -3,6 +3,11 @@ import { MemoryAuthRepository, PostgresAuthRepository, type AuthRepository } fro
 import { MemoryBookingRepository, PostgresBookingRepository, type BookingRepository } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { MemoryPaymentRepository, PostgresPaymentRepository, type PaymentRepository } from "./payments.js";
+import {
+  MemoryPartnerCatalogRepository,
+  PostgresPartnerCatalogRepository,
+  type PartnerCatalogRepository,
+} from "./partnerCatalog.js";
 import { PostgresCatalogRepository } from "./postgresCatalog.js";
 import { MemoryPartnerReservationRepository, PostgresPartnerReservationRepository, type PartnerReservationRepository } from "./reservations.js";
 
@@ -12,6 +17,7 @@ export interface CatalogStorage {
   bookingRepository: BookingRepository;
   paymentRepository: PaymentRepository;
   reservationRepository: PartnerReservationRepository;
+  partnerCatalogRepository: PartnerCatalogRepository;
   close(): Promise<void>;
 }
 
@@ -52,6 +58,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
       bookingRepository,
       paymentRepository: new MemoryPaymentRepository(bookingRepository),
       reservationRepository: new MemoryPartnerReservationRepository(bookingRepository, repository),
+      partnerCatalogRepository: new MemoryPartnerCatalogRepository(),
       close: async () => undefined,
     };
   }
@@ -68,6 +75,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     bookingRepository: new PostgresBookingRepository(pool),
     paymentRepository: new PostgresPaymentRepository(pool),
     reservationRepository: new PostgresPartnerReservationRepository(pool),
+    partnerCatalogRepository: new PostgresPartnerCatalogRepository(pool),
     close: () => pool.end(),
   };
 }
