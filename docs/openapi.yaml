@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
     the local Fastify service provides PostgreSQL-backed API endpoints.
@@ -550,6 +550,22 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /v1/partner/moderation:
+    get:
+      tags: [Partner]
+      operationId: listPartnerModerationHistory
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Moderation history for the venue assigned to the partner
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AdminModerationRecord'
+
   /v1/partner/venue:
     get:
       tags: [Partner]
@@ -907,6 +923,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/admin/moderation:
+    get:
+      tags: [Admin]
+      operationId: listAdminModeration
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [pending, approved, rejected, all], default: all}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 80}}
+      responses:
+        '200':
+          description: Moderation queue and recent decisions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AdminModerationRecord'
+        '403':
+          description: Administrator role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/admin/moderation/{moderationId}/approve:
+    post:
+      tags: [Admin]
+      operationId: approveAdminModeration
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: moderationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModerationDecision'
+      responses:
+        '200':
+          description: Changes applied atomically and moderation completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModerationRecord'
+        '409':
+          description: Moderation was already completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/admin/moderation/{moderationId}/reject:
+    post:
+      tags: [Admin]
+      operationId: rejectAdminModeration
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: moderationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminModerationDecision'
+      responses:
+        '200':
+          description: Changes rejected and decision exposed to the partner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminModerationRecord'
+        '400':
+          description: Rejection reason is missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Moderation was already completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v1/admin/notification-deliveries:
     get:
       tags: [Admin]
@@ -1125,6 +1228,31 @@ components:
         beforeData: {type: object, additionalProperties: true}
         proposedData: {type: object, additionalProperties: true}
         createdAt: {type: string, format: date-time}
+
+    AdminModerationRecord:
+      allOf:
+        - $ref: '#/components/schemas/PartnerModerationChange'
+        - type: object
+          required: [targetType, targetId, targetTitle, venueId, venueTitle, status, reviewComment, reviewedAt]
+          properties:
+            targetType: {type: string, enum: [venue, room]}
+            targetId: {type: string, format: uuid}
+            targetTitle: {type: string}
+            venueId: {type: string, format: uuid}
+            venueTitle: {type: string}
+            submittedById: {type: [string, 'null'], format: uuid}
+            submittedByName: {type: [string, 'null']}
+            submittedByEmail: {type: [string, 'null'], format: email}
+            status: {type: string, enum: [pending, approved, rejected]}
+            reviewComment: {type: [string, 'null']}
+            reviewedById: {type: [string, 'null'], format: uuid}
+            reviewedAt: {type: [string, 'null'], format: date-time}
+
+    AdminModerationDecision:
+      type: object
+      additionalProperties: false
+      properties:
+        comment: {type: string, maxLength: 1000}
 
     PartnerVenue:
       allOf:

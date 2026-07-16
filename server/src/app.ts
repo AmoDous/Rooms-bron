@@ -9,6 +9,7 @@ import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { MemoryPaymentRepository, type PaymentRepository } from "./payments.js";
 import {
   MemoryPartnerCatalogRepository,
+  type AdminModerationQuery,
   type PartnerCatalogRepository,
   type PartnerRoomWrite,
   type PartnerScheduleExceptionWrite,
@@ -194,6 +195,19 @@ interface PartnerRoomParams {
 
 interface PartnerScheduleDateParams {
   date: string;
+}
+
+interface AdminModerationParams {
+  moderationId: string;
+}
+
+interface AdminModerationQuerystring {
+  status?: AdminModerationQuery["status"];
+  limit?: number;
+}
+
+interface AdminModerationDecisionBody {
+  comment?: string;
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -518,6 +532,13 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const assigned = await config.bookingRepository.getPartnerVenue(current.user.id);
     if (!assigned) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Для этого кабинета площадка ещё не назначена.");
     return { actorId: current.user.id, venueId: assigned.id };
+  };
+
+  const requireAdmin = async (authorization: string | undefined) => {
+    const current = await auth.authenticate(authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в админку Rooms.");
+    if (current.user.role !== "admin") throw new ApiError(403, "ADMIN_FORBIDDEN", "Этот раздел доступен только администратору Rooms.");
+    return current.user;
   };
 
   const validatePartnerVenueWrite = (body: PartnerVenueWrite) => {
@@ -1100,6 +1121,72 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const booking = (await config.bookingRepository.listByClient(current.user.id, "all")).find((item) => item.id === payment.bookingId);
     if (!booking) throw new ApiError(409, "BOOKING_STATE_CHANGED", "Статус брони изменился. Обновите личный кабинет.");
     return { payment, booking };
+  });
+
+  app.get<{ Querystring: AdminModerationQuerystring }>("/v1/admin/moderation", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["pending", "approved", "rejected", "all"], default: "all" },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 80 },
+        },
+      },
+    },
+  }, async (request) => {
+    await requireAdmin(request.headers.authorization);
+    return config.partnerCatalogRepository.listModeration({
+      status: request.query.status ?? "all",
+      limit: request.query.limit ?? 80,
+    });
+  });
+
+  const moderationParamsSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["moderationId"],
+    properties: { moderationId: { type: "string", minLength: 36, maxLength: 36 } },
+  } as const;
+  const moderationDecisionBodySchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { comment: { type: "string", maxLength: 1000 } },
+  } as const;
+
+  app.post<{ Params: AdminModerationParams; Body: AdminModerationDecisionBody }>("/v1/admin/moderation/:moderationId/approve", {
+    schema: { params: moderationParamsSchema, body: moderationDecisionBodySchema },
+  }, async (request) => {
+    const admin = await requireAdmin(request.headers.authorization);
+    const item = await config.partnerCatalogRepository.decideModeration(
+      request.params.moderationId,
+      admin.id,
+      "approved",
+      request.body?.comment?.trim() ?? "",
+    );
+    if (!item) throw new ApiError(404, "MODERATION_NOT_FOUND", "Изменение для модерации не найдено.");
+    return item;
+  });
+
+  app.post<{ Params: AdminModerationParams; Body: AdminModerationDecisionBody }>("/v1/admin/moderation/:moderationId/reject", {
+    schema: { params: moderationParamsSchema, body: moderationDecisionBodySchema },
+  }, async (request) => {
+    const admin = await requireAdmin(request.headers.authorization);
+    const comment = request.body?.comment?.trim() ?? "";
+    if (comment.length < 3) throw new ApiError(400, "REVIEW_COMMENT_REQUIRED", "Укажите причину отклонения для партнёра.");
+    const item = await config.partnerCatalogRepository.decideModeration(
+      request.params.moderationId,
+      admin.id,
+      "rejected",
+      comment,
+    );
+    if (!item) throw new ApiError(404, "MODERATION_NOT_FOUND", "Изменение для модерации не найдено.");
+    return item;
+  });
+
+  app.get("/v1/partner/moderation", async (request) => {
+    const { venueId } = await requirePartnerVenue(request.headers.authorization);
+    return config.partnerCatalogRepository.listModeration({ status: "all", limit: 30, venueId });
   });
 
   app.get("/v1/partner/venue", async (request) => {

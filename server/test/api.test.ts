@@ -366,17 +366,32 @@ test("partner queue holds one conflicting booking for 15 minutes and hides the c
 test("partner catalog persists operational settings and keeps public edits in moderation", async () => {
   const partnerId = "50000000-0000-4000-8000-000000000021";
   const partnerPassword = "rooms2026";
-  const authRepository = new MemoryAuthRepository([{
-    id: partnerId,
-    role: "partner",
-    name: "Редактор Kids Loft",
-    email: "catalog@kids-loft.ru",
-    phone: null,
-    city: "Воронеж",
-    passwordHash: await hashPassword(partnerPassword),
-    passwordResetRequired: false,
-    blockedAt: null,
-  }]);
+  const adminId = "50000000-0000-4000-8000-000000000022";
+  const adminPassword = "admin-rooms-2026";
+  const authRepository = new MemoryAuthRepository([
+    {
+      id: partnerId,
+      role: "partner",
+      name: "Редактор Kids Loft",
+      email: "catalog@kids-loft.ru",
+      phone: null,
+      city: "Воронеж",
+      passwordHash: await hashPassword(partnerPassword),
+      passwordResetRequired: false,
+      blockedAt: null,
+    },
+    {
+      id: adminId,
+      role: "admin",
+      name: "Администратор Rooms",
+      email: "admin.catalog@rooms.test",
+      phone: null,
+      city: "Воронеж",
+      passwordHash: await hashPassword(adminPassword),
+      passwordResetRequired: false,
+      blockedAt: null,
+    },
+  ]);
   const venue = demoVenues.find((item) => item.id === venueIds.kidsLoft)!;
   const bookingRepository = new MemoryBookingRepository({ partners: [{ userId: partnerId, venue }] });
   const partnerCatalogRepository = new MemoryPartnerCatalogRepository();
@@ -535,6 +550,91 @@ test("partner catalog persists operational settings and keeps public edits in mo
     },
   });
   assert.equal(wrongVenueRoom.statusCode, 404);
+
+  const partnerCannotModerate = await catalogApp.inject({ method: "GET", url: "/v1/admin/moderation", headers });
+  assert.equal(partnerCannotModerate.statusCode, 403);
+  const adminLogin = await catalogApp.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "admin.catalog@rooms.test", password: adminPassword },
+  });
+  assert.equal(adminLogin.statusCode, 200);
+  assert.equal(adminLogin.json().user.role, "admin");
+  const adminHeaders = { authorization: `Bearer ${adminLogin.json().accessToken as string}` };
+  const moderation = await catalogApp.inject({
+    method: "GET",
+    url: "/v1/admin/moderation?status=pending&limit=20",
+    headers: adminHeaders,
+  });
+  assert.equal(moderation.statusCode, 200);
+  assert.equal(moderation.json().length, 3);
+  const venueModeration = moderation.json().find((item: { targetType: string }) => item.targetType === "venue");
+  const existingRoomModeration = moderation.json().find((item: { targetId: string }) => item.targetId === roomIds.kosmos);
+  const newRoomModeration = moderation.json().find((item: { targetId: string }) => item.targetId === createdRoom.json().id);
+  assert.ok(venueModeration);
+  assert.ok(existingRoomModeration);
+  assert.ok(newRoomModeration);
+
+  const approvedVenue = await catalogApp.inject({
+    method: "POST",
+    url: `/v1/admin/moderation/${venueModeration.id}/approve`,
+    headers: adminHeaders,
+    payload: { comment: "Данные площадки проверены" },
+  });
+  assert.equal(approvedVenue.statusCode, 200);
+  assert.equal(approvedVenue.json().status, "approved");
+  const venueAfterApproval = await catalogApp.inject({ method: "GET", url: "/v1/partner/venue", headers });
+  assert.equal(venueAfterApproval.json().title, "Kids Loft на Маркса");
+  assert.equal(venueAfterApproval.json().pendingChange, null);
+
+  const approvedRoom = await catalogApp.inject({
+    method: "POST",
+    url: `/v1/admin/moderation/${existingRoomModeration.id}/approve`,
+    headers: adminHeaders,
+    payload: { comment: "Карточка соответствует правилам" },
+  });
+  assert.equal(approvedRoom.statusCode, 200);
+  const roomsAfterApproval = await catalogApp.inject({ method: "GET", url: "/v1/partner/rooms", headers });
+  const approvedKosmos = roomsAfterApproval.json().find((item: { id: string }) => item.id === roomIds.kosmos);
+  assert.equal(approvedKosmos.title, "Космос Premium");
+  assert.equal(approvedKosmos.pricePerHour, 1900);
+  assert.equal(approvedKosmos.pendingChange, null);
+
+  const rejectWithoutReason = await catalogApp.inject({
+    method: "POST",
+    url: `/v1/admin/moderation/${newRoomModeration.id}/reject`,
+    headers: adminHeaders,
+    payload: { comment: "" },
+  });
+  assert.equal(rejectWithoutReason.statusCode, 400);
+  const rejectedRoom = await catalogApp.inject({
+    method: "POST",
+    url: `/v1/admin/moderation/${newRoomModeration.id}/reject`,
+    headers: adminHeaders,
+    payload: { comment: "Нужно дополнить описание помещения" },
+  });
+  assert.equal(rejectedRoom.statusCode, 200);
+  assert.equal(rejectedRoom.json().status, "rejected");
+  assert.equal(rejectedRoom.json().reviewComment, "Нужно дополнить описание помещения");
+  const roomsAfterRejection = await catalogApp.inject({ method: "GET", url: "/v1/partner/rooms", headers });
+  const hiddenRoom = roomsAfterRejection.json().find((item: { id: string }) => item.id === createdRoom.json().id);
+  assert.equal(hiddenRoom.publicationStatus, "hidden");
+  assert.equal(hiddenRoom.pendingChange, null);
+  const partnerModerationHistory = await catalogApp.inject({ method: "GET", url: "/v1/partner/moderation", headers });
+  assert.equal(partnerModerationHistory.statusCode, 200);
+  assert.equal(partnerModerationHistory.json().length, 3);
+  assert.ok(partnerModerationHistory.json().some((item: { status: string }) => item.status === "approved"));
+  assert.ok(partnerModerationHistory.json().some((item: { status: string; reviewComment: string }) => (
+    item.status === "rejected" && item.reviewComment === "Нужно дополнить описание помещения"
+  )));
+  const repeatedDecision = await catalogApp.inject({
+    method: "POST",
+    url: `/v1/admin/moderation/${newRoomModeration.id}/approve`,
+    headers: adminHeaders,
+    payload: { comment: "Повторная попытка" },
+  });
+  assert.equal(repeatedDecision.statusCode, 409);
+  assert.equal(repeatedDecision.json().code, "MODERATION_ALREADY_REVIEWED");
   await catalogApp.close();
 });
 

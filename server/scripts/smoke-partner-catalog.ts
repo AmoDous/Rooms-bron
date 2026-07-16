@@ -11,6 +11,9 @@ const venueId = randomUUID();
 const suffix = userId.slice(0, 8);
 const email = `smoke.partner.${suffix}@rooms.test`;
 const password = "rooms2026";
+const adminEmail = "admin@rooms.ru";
+const adminPassword = process.env.DEMO_ADMIN_PASSWORD?.trim() || "rooms2026";
+let smokeRoomId = "";
 
 async function api<T>(path: string, options: { method?: string; token?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -100,6 +103,7 @@ try {
     status: "review",
   };
   const room = await api<Record<string, any>>("/v1/partner/rooms", { method: "POST", token, body: roomWrite });
+  smokeRoomId = room.id;
   assert.equal(room.publicationStatus, "review");
   assert.equal(room.services.length, 1);
   const editedRoom = await api<Record<string, any>>(`/v1/partner/rooms/${room.id}`, {
@@ -109,6 +113,58 @@ try {
   });
   assert.equal(editedRoom.title, "Smoke Room Edited");
   assert.equal(editedRoom.minimumHours, 3);
+
+  const adminLogin = await api<{ accessToken: string }>("/v1/auth/login", {
+    method: "POST",
+    body: { login: adminEmail, password: adminPassword },
+  });
+  const adminToken = adminLogin.accessToken;
+  const pendingModeration = await api<any[]>("/v1/admin/moderation?status=pending&limit=200", { token: adminToken });
+  const venueModeration = pendingModeration.find((item) => item.targetId === venueId);
+  const roomModeration = pendingModeration.find((item) => item.targetId === room.id);
+  assert.ok(venueModeration);
+  assert.ok(roomModeration);
+  const approvedVenue = await api<Record<string, any>>(`/v1/admin/moderation/${venueModeration.id}/approve`, {
+    method: "POST",
+    token: adminToken,
+    body: { comment: "Smoke venue approved" },
+  });
+  assert.equal(approvedVenue.status, "approved");
+  const approvedRoom = await api<Record<string, any>>(`/v1/admin/moderation/${roomModeration.id}/approve`, {
+    method: "POST",
+    token: adminToken,
+    body: { comment: "Smoke room approved" },
+  });
+  assert.equal(approvedRoom.status, "approved");
+  const approvedVenueView = await api<Record<string, any>>("/v1/partner/venue", { token });
+  assert.equal(approvedVenueView.title, "Smoke Venue Pending");
+  assert.equal(approvedVenueView.pendingChange, null);
+  const approvedRooms = await api<any[]>("/v1/partner/rooms", { token });
+  assert.equal(approvedRooms[0]?.title, "Smoke Room Edited");
+  assert.equal(approvedRooms[0]?.publicationStatus, "published");
+
+  const rejectedDraft = await api<Record<string, any>>(`/v1/partner/rooms/${room.id}`, {
+    method: "PATCH",
+    token,
+    body: { ...roomWrite, title: "Smoke Room Must Be Rejected", minimumHours: 3, services: approvedRooms[0].services, status: "published" },
+  });
+  assert.equal(rejectedDraft.title, "Smoke Room Edited");
+  assert.equal(rejectedDraft.pendingChange.proposedData.title, "Smoke Room Must Be Rejected");
+  const nextModeration = await api<any[]>("/v1/admin/moderation?status=pending&limit=200", { token: adminToken });
+  const rejectedModeration = nextModeration.find((item) => item.targetId === room.id);
+  assert.ok(rejectedModeration);
+  const rejected = await api<Record<string, any>>(`/v1/admin/moderation/${rejectedModeration.id}/reject`, {
+    method: "POST",
+    token: adminToken,
+    body: { comment: "Smoke rejection reason" },
+  });
+  assert.equal(rejected.status, "rejected");
+  const roomAfterRejection = (await api<any[]>("/v1/partner/rooms", { token }))[0];
+  assert.equal(roomAfterRejection.title, "Smoke Room Edited");
+  assert.equal(roomAfterRejection.publicationStatus, "published");
+  assert.equal(roomAfterRejection.pendingChange, null);
+  const moderationHistory = await api<any[]>("/v1/partner/moderation", { token });
+  assert.ok(moderationHistory.some((item) => item.status === "rejected" && item.reviewComment === "Smoke rejection reason"));
 
   const special = await api<Record<string, any>>("/v1/partner/schedule-exceptions/2099-08-15", {
     method: "PUT",
@@ -122,7 +178,8 @@ try {
   assert.equal(rooms.length, 1);
   console.log(`Partner catalog smoke passed for venue ${venueId} and room ${room.id}.`);
 } finally {
-  await pool.query("delete from audit_log where actor_id = $1::uuid", [userId]).catch(() => undefined);
+  await pool.query(`delete from audit_log where actor_id = $1::uuid or entity_id = $2 or entity_id = $3
+    or before_data->>'targetId' = $2 or before_data->>'targetId' = $3`, [userId, venueId, smokeRoomId]).catch(() => undefined);
   await pool.query("delete from venues where id = $1::uuid", [venueId]).catch(() => undefined);
   await pool.query("delete from users where id = $1::uuid", [userId]).catch(() => undefined);
   const cleanup = await pool.query<{ users: number; venues: number }>(`

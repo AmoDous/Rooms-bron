@@ -605,6 +605,13 @@
     .status.review{background:#fff4de;color:#9b6a22}
     .admin-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
     .admin-actions .btn{min-height:38px;padding:0 12px}
+    .moderation-diff{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--paper-2);overflow:hidden}
+    .moderation-diff summary{cursor:pointer;padding:10px 12px;font-size:12px;font-weight:900;color:var(--ink)}
+    .moderation-diff-list{display:grid;padding:0 12px 10px}
+    .moderation-diff-row{display:grid;grid-template-columns:minmax(100px,.65fr) repeat(2,minmax(0,1fr));gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:12px;line-height:1.4}
+    .moderation-diff-row>strong{font-size:12px}.moderation-diff-row>span{min-width:0;overflow-wrap:anywhere}.moderation-before{color:var(--muted)}.moderation-after{color:var(--ink);font-weight:800}
+    .moderation-reject{position:relative}.moderation-reject>summary{display:inline-flex;align-items:center;min-height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:13px;font-weight:900;list-style:none}.moderation-reject>summary::-webkit-details-marker{display:none}
+    .moderation-reject-form{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;width:min(100%,520px);margin-top:8px}.moderation-reject-form textarea{min-height:64px;background:#fff}.moderation-comment{margin-top:10px;padding:10px 12px;border-left:3px solid var(--accent);border-radius:0 8px 8px 0;background:var(--paper-2);font-size:12px;line-height:1.45}
     .booking-note{
       display:grid;gap:8px;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:14px;background:var(--paper-2);
     }
@@ -783,6 +790,7 @@
       .top-in{height:auto;padding:12px 0;flex-wrap:wrap}
       .actions{width:100%;min-width:0;margin-left:0}
       .top-btn{flex:1 1 0;min-width:0;padding:0 10px}
+      .moderation-diff-row{grid-template-columns:1fr}.moderation-diff-row>strong{margin-bottom:-4px}.moderation-reject-form{grid-template-columns:1fr}
       .hero{padding:28px 0 30px}
       .hero h1{font-size:40px;line-height:1.02}
       .hero-copy{font-size:17px}
@@ -1140,9 +1148,18 @@
     async function syncPartnerApiReservations(){if(!apiState.connected||!apiState.accessToken)return [];return mergePartnerApiReservations(await apiRequest("/v1/partner/reservations?includeCancelled=true",{auth:true}))}
     function localApiModerationData(type,value={}){
       const rename=type==="venue"?{venueType:"type",description:"about"}:{description:"desc",promotion:"promo",capacityMax:"capacity",pricePerHour:"price"},result={};
-      Object.entries(value||{}).forEach(([key,item])=>{if(key==="publicationRequested"||key==="capacityMin")return;const target=rename[key]||key;result[target]=target==="services"&&Array.isArray(item)?item.map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})):item});
+      Object.entries(value||{}).forEach(([key,item])=>{if(key==="publicationRequested"){result.status=item?"published":"hidden";return}if(key==="capacityMin")return;const target=rename[key]||key;result[target]=target==="services"&&Array.isArray(item)?item.map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})):item});
       return result;
     }
+    function localModerationFromApi(item){
+      const targetType=item.targetType,collection=targetType==="venue"?venues:rooms,target=collection.find(entry=>entry.apiId===item.targetId||entry.id===item.targetId||entry.id===item.targetSlug),venue=venues.find(entry=>entry.apiId===item.venueId||entry.id===item.venueId),before=localApiModerationData(targetType,item.beforeData),after=localApiModerationData(targetType,item.proposedData);
+      return {id:item.id,targetType,targetId:target?.id||item.targetId,targetTitle:item.targetTitle||target?.title||"Изменения площадки",venueId:venue?.id||item.venueId,venueTitle:item.venueTitle||venue?.title||"Площадка",kind:targetType==="room"&&!Object.keys(before).length?"create":"update",status:item.status||"pending",before,after,fields:moderationChangedFields(before,after),created:item.createdAt,updated:item.createdAt,decidedAt:item.reviewedAt||"",decidedBy:item.reviewedById||"",reviewComment:item.reviewComment||"",submittedByName:item.submittedByName||"",submittedByEmail:item.submittedByEmail||"",server:true};
+    }
+    function mergeApiModeration(items=[]){
+      const legacy=moderationRequests().filter(item=>item.server!==true),mapped=items.map(localModerationFromApi);saveModerationRequests([...mapped,...legacy]);return mapped;
+    }
+    async function syncAdminApiModeration(){if(!apiState.connected||!apiState.accessToken)return [];return mergeApiModeration(await apiRequest("/v1/admin/moderation?status=all&limit=80",{auth:true}))}
+    async function syncPartnerApiModerationHistory(){if(!apiState.connected||!apiState.accessToken)return [];return mergeApiModeration(await apiRequest("/v1/partner/moderation",{auth:true}))}
     function syncApiPartnerModeration(targetType,targetId,targetTitle,change){
       const list=moderationRequests().filter(item=>!(item.server===true&&item.targetType===targetType&&item.targetId===targetId));
       if(!change)return saveModerationRequests(list);
@@ -1168,12 +1185,12 @@
     }
     async function syncPartnerApiContext(){
       const [venueData,roomData]=await Promise.all([apiRequest("/v1/partner/venue",{auth:true}),apiRequest("/v1/partner/rooms",{auth:true})]);syncApiPartnerVenue(venueData);syncApiPartnerRooms(roomData);
-      const [bookings,reservations]=await Promise.all([syncPartnerApiBookings(),syncPartnerApiReservations()]);return {rooms:roomData,bookings,reservations};
+      const [bookings,reservations,moderation]=await Promise.all([syncPartnerApiBookings(),syncPartnerApiReservations(),syncPartnerApiModerationHistory()]);return {rooms:roomData,bookings,reservations,moderation};
     }
     async function restoreApiSession(){
       const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null,partnerSession=partnerAuthSession();
       if((!session||(!session.source&&!account?.api))&&!partnerSession?.api)return null;
-      try{const payload=await apiRequest("/v1/auth/refresh",{method:"POST"}),restored=acceptApiSession(payload);if(payload.user?.role==="partner"){await syncPartnerApiContext();if(location.hash===partnerRoute)renderPartnerCabinet(true)}else await syncApiBookings();return restored}
+      try{const payload=await apiRequest("/v1/auth/refresh",{method:"POST"}),restored=acceptApiSession(payload);if(payload.user?.role==="partner"){await syncPartnerApiContext();if(location.hash===partnerRoute)renderPartnerCabinet(true)}else if(payload.user?.role==="admin"){await syncAdminApiModeration()}else if(payload.user?.role==="client")await syncApiBookings();return restored}
       catch(error){
         if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(partnerSession?.api){localStorage.removeItem(store.partnerAuth);apiState.partnerBookingsLoaded=false}if(account?.api){write(store.accounts,accounts().filter(item=>item.id!==account.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}}
         return null;
@@ -1867,6 +1884,21 @@
       const item=moderationRequests().find(x=>x.status==="pending"&&x.targetType===targetType&&x.targetId===targetId);
       return item?.after||{};
     }
+    function moderationValue(value,empty="не указано"){
+      if(value===null||value===undefined||value==="")return empty;
+      if(typeof value==="string"&&({published:1,hidden:1,review:1})[value])return ({published:"опубликовано",hidden:"скрыто",review:"на проверке"})[value];
+      if(typeof value==="boolean")return value?"да":"нет";
+      if(Array.isArray(value)){
+        if(!value.length)return empty;
+        return value.map(item=>item&&typeof item==="object"?`${item.name||"Услуга"}${Number(item.price)?` · ${money(Number(item.price))}`:""}`:String(item)).join(", ");
+      }
+      if(typeof value==="object")return JSON.stringify(value);
+      return String(value);
+    }
+    function moderationDiffHtml(item){
+      const fields=item.fields||moderationChangedFields(item.before,item.after),rows=fields.map(field=>`<div class="moderation-diff-row"><strong>${esc(moderationFieldLabel(field))}</strong><span class="moderation-before">Было: ${esc(moderationValue(item.before?.[field],item.kind==="create"?"новое помещение":"не указано"))}</span><span class="moderation-after">Станет: ${esc(moderationValue(item.after?.[field]))}</span></div>`).join("");
+      return rows?`<details class="moderation-diff"><summary>Посмотреть изменения · ${fields.length}</summary><div class="moderation-diff-list">${rows}</div></details>`:"";
+    }
     function queueModeration({targetType,targetId,targetTitle,before={},after={},kind="update"}){
       const changed=moderationChangedFields(before,after),list=moderationRequests(),index=list.findIndex(x=>x.status==="pending"&&x.targetType===targetType&&x.targetId===targetId),now=new Date().toISOString();
       if(index>=0){
@@ -1881,8 +1913,9 @@
     }
     function moderationCard(item,area="admin"){
       const fields=(item.fields||moderationChangedFields(item.before,item.after)).map(moderationFieldLabel).join(", ")||"данные карточки",status=item.status||"pending";
-      const actions=area==="admin"&&status==="pending"?`<div class="admin-actions"><button class="btn primary" data-moderation="${item.id}|approved" type="button">Одобрить</button><button class="btn" data-moderation="${item.id}|rejected" type="button">Отклонить</button></div>`:"";
-      return `<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(item.targetTitle||"Изменения площадки")}</h4><p class="muted" style="margin:0">${item.kind==="create"?"Новое помещение":"Изменены"}: ${esc(fields)}</p></div><span class="status ${moderationStatusClass(status)}">${moderationStatusLabel(status)}</span></div><p class="muted" style="margin:9px 0 0">Отправлено ${new Date(item.updated||item.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}${item.decidedAt?` · решение ${new Date(item.decidedAt).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}`:""}</p>${actions}</article>`;
+      const actions=area==="admin"&&status==="pending"?`<div class="admin-actions"><button class="btn primary" data-moderation="${item.id}|approved" type="button">Одобрить</button><details class="moderation-reject"><summary>Отклонить</summary><form class="moderation-reject-form" data-moderation-reject="${item.id}"><textarea name="comment" minlength="3" maxlength="1000" placeholder="Что партнёру нужно исправить" aria-label="Причина отклонения" required></textarea><button class="btn" type="submit">Отправить причину</button></form></details></div>`:"";
+      const author=item.submittedByName||item.submittedByEmail?` · ${esc(item.submittedByName||item.submittedByEmail)}`:"",comment=item.reviewComment?`<div class="moderation-comment"><strong>${status==="rejected"?"Что нужно исправить":"Комментарий Rooms"}</strong><br>${esc(item.reviewComment)}</div>`:"";
+      return `<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(item.targetTitle||"Изменения площадки")}</h4><p class="muted" style="margin:0">${item.kind==="create"?"Новое помещение":"Изменены"}: ${esc(fields)}</p></div><span class="status ${moderationStatusClass(status)}">${moderationStatusLabel(status)}</span></div><p class="muted" style="margin:9px 0 0">Отправлено ${new Date(item.updated||item.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}${author}${item.decidedAt?` · решение ${new Date(item.decidedAt).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}`:""}</p>${moderationDiffHtml(item)}${comment}${actions}</article>`;
     }
     function venueAdminState(){return read(store.venueAdmin,{})||{}}
     function roomAdminState(){return venueAdminState().__rooms||{}}
@@ -3412,7 +3445,7 @@
         return `<article class="admin-item"><div class="admin-item-head"><div><h4>${esc(v.title)}</h4><p class="muted" style="margin:0">${esc(v.address)} · ${venueRooms.length?venueRooms.length+" комнат":"комнаты не добавлены"} · ${venueRooms.filter(isRoomPublic).length} в каталоге${tariff?` · ${money(tariff.monthly)}/мес.`:""}</p></div><div class="admin-meta" style="margin:0"><span class="status ${publicationStatusClass(pub)}">${publicationStatusLabel(pub)}</span><span class="status ${verificationStatusClass(verification)}">${verificationStatusLabel(verification)}</span><span class="status ${readiness.ready?"paid":"review"}">готовность ${readiness.passed}/${readiness.total}</span><span class="status ${cabinetStatusClass(cabinet)}">${cabinetStatusLabel(cabinet)}</span><span class="status ${mode==="crm"?subscriptionStatusClass(subscription):"paid"}">${partnerModeLabel(mode)}${mode==="crm"?` · ${subscriptionStatusLabel(subscription)}`:""}</span>${billing?.outstanding?`<span class="status ${billing.overdue?"cancelled":"review"}">долг ${money(billing.outstanding)}</span>`:""}</div></div><div class="admin-actions"><button class="btn ${pub==="published"?"soft":""}" data-admin-venue="${v.id}|publicationStatus|published" type="button">Опубликовать</button><button class="btn ${pub==="review"?"soft":""}" data-admin-venue="${v.id}|publicationStatus|review" type="button">На модерацию</button><button class="btn ${pub==="hidden"?"soft":""}" data-admin-venue="${v.id}|publicationStatus|hidden" type="button">Скрыть</button><button class="btn ${cabinet==="active"?"soft":""}" data-admin-venue="${v.id}|cabinetStatus|active" type="button">Открыть кабинет</button><button class="btn ${cabinet==="paused"?"soft":""}" data-admin-venue="${v.id}|cabinetStatus|paused" type="button">Поставить на паузу</button></div><div class="admin-actions"><button class="btn ${verification==="verified"?"soft":""}" data-admin-venue="${v.id}|verificationStatus|verified" type="button">Верификация пройдена</button><button class="btn ${verification==="review"?"soft":""}" data-admin-venue="${v.id}|verificationStatus|review" type="button">Вернуть на проверку</button></div><div class="admin-actions"><button class="btn ${mode==="catalog"?"soft":""}" data-admin-venue="${v.id}|partnerMode|catalog" type="button">CRM + каталог</button><button class="btn ${mode==="crm"?"soft":""}" data-admin-venue="${v.id}|partnerMode|crm" type="button">Только CRM</button>${mode==="crm"?`<button class="btn ${subscription==="trial"?"soft":""}" data-admin-venue="${v.id}|subscriptionStatus|trial" type="button">Тест 14 дней</button><button class="btn ${subscription==="active"?"soft":""}" data-admin-venue="${v.id}|subscriptionStatus|active" type="button">Подписка активна</button><button class="btn ${subscription==="overdue"?"soft":""}" data-admin-venue="${v.id}|subscriptionStatus|overdue" type="button">Оплата просрочена</button>`:""}</div>${roomList||`<div class="empty" style="display:block;margin-top:10px">У площадки пока нет комнат.</div>`}</article>`;
       }).join("");
       openModal(`<div class="admin-dashboard">
-        <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. Это v1 на локальных данных, но уже с рабочими статусами.</p></div>
+        <div class="admin-title"><span class="kicker">Админка Rooms</span><h2>Операционный центр</h2><p class="muted">Служебный кабинет для заявок, партнёров, помещений и отзывов. ${current()?.api&&apiState.storage==="postgresql"?"Очередь изменений синхронизирована с PostgreSQL.":"Демо-данные сохраняются в этом браузере."}</p></div>
         <div class="dash-grid"><div class="dash-card"><span class="muted">Новые заявки</span><strong>${pending}</strong></div><div class="dash-card"><span class="muted">Средний чек</span><strong>${money(adminFinance.avg)}</strong></div><div class="dash-card"><span class="muted">Допуслуги</span><strong>${money(adminFinance.extras)}</strong></div><div class="dash-card"><span class="muted">Заявки с допами</span><strong>${adminFinance.withServices}</strong></div></div>
         <div class="chips"><button class="btn soft" data-admin-notifications type="button">Уведомления${adminUnread?` · ${adminUnread}`:""}</button><button class="btn soft" data-notification-settings="admin" type="button">Каналы связи</button><button class="btn soft" data-export="admin" type="button">Экспорт всех записей CSV</button><span class="status ${moderationPending?"review":"paid"}">Изменения на проверке · ${moderationPending}</span><span class="status ${riskCount?"cancelled":"paid"}">Сигналы риска · ${riskCount}</span></div>
         ${adminAnalyticsPanel(books)}
@@ -3967,17 +4000,24 @@
       if(lead&&status==="rejected"){const accounts=ensurePartnerAccounts();savePartnerAccounts(accounts.map(x=>x.leadId===lead.id?{...x,status:"blocked"}:x))}
       logActivity("lead_status","Статус заявки площадки изменён",`${lead?.venue||id} · ${leadStatusLabel(status)}${status==="approved"?" · временный доступ создан":""}`,"admin");renderAdminDashboard(true);toast(status==="approved"?"Площадка одобрена. Временный логин и пароль созданы.":`Статус площадки: ${leadStatusLabel(status)}.`);
     }
-    function updateModeration(payload){
+    async function updateModeration(payload,comment=""){
       const [id,status]=payload.split("|"),allowed=["approved","rejected"],list=moderationRequests(),item=list.find(x=>x.id===id&&x.status==="pending");
       if(!item||!allowed.includes(status))return toast("Изменение уже обработано или не найдено.");
+      if(status==="rejected"&&String(comment).trim().length<3)return toast("Напишите партнёру, что нужно исправить.");
+      let decided;
+      if(item.server&&current()?.api&&apiState.connected&&apiState.accessToken){
+        try{
+          const remote=await apiRequest(`/v1/admin/moderation/${encodeURIComponent(id)}/${status==="approved"?"approve":"reject"}`,{method:"POST",auth:true,body:{comment:String(comment).trim()}});decided=localModerationFromApi(remote);await syncAdminApiModeration();
+        }catch(error){await syncAdminApiModeration().catch(()=>null);renderAdminDashboard(true);toast(error.message||"Не удалось сохранить решение модерации.");return}
+      }
       const data=partnerData();
       if(status==="approved"){
         if(item.targetType==="venue"&&data.venue.id===item.targetId)data.venue={...data.venue,...item.after};
         if(item.targetType==="room"&&data.rooms[item.targetId])data.rooms[item.targetId]={...data.rooms[item.targetId],...item.after,...(item.kind==="create"?{status:"published"}:{})};
       }else if(item.kind==="create"&&item.targetType==="room"&&data.rooms[item.targetId])data.rooms[item.targetId]={...data.rooms[item.targetId],status:"hidden"};
       savePartnerData(data);
-      const decided={...item,status,decidedAt:new Date().toISOString(),decidedBy:"admin"};
-      saveModerationRequests(list.map(x=>x.id===id?decided:x));
+      decided=decided||{...item,status,reviewComment:String(comment).trim(),decidedAt:new Date().toISOString(),decidedBy:"admin"};
+      if(!item.server)saveModerationRequests(list.map(x=>x.id===id?decided:x));
       logActivity("moderation_decision",status==="approved"?"Rooms одобрил изменения":"Rooms отклонил изменения",`${item.targetTitle} · ${(item.fields||[]).map(moderationFieldLabel).join(", ")}`,"admin");
       applyPartnerData();applyVenueAdminState();hydrate();notifyPartnerModeration(decided,status);renderAdminDashboard(true);toast(`Изменения «${item.targetTitle}»: ${moderationStatusLabel(status)}.`);
     }
@@ -4166,7 +4206,7 @@
       renderSpace(r.id,true);
     }
     async function login(form){
-      if(isAdminLogin(form.login.value,form.password.value)){
+      if(isAdminLogin(form.login.value,form.password.value)&&!apiState.connected){
         const acc=ensureAdminAccount();write(store.session,{id:acc.id});hydrate();renderAdminDashboard();toast("Вы вошли в админку Rooms.");return;
       }
       if(isAccountantLogin(form.login.value,form.password.value)){
@@ -4176,6 +4216,8 @@
         const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
         try{
           const payload=await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}),acc=acceptApiSession(payload);
+          if(payload.user?.role==="admin"){pending=null;await syncAdminApiModeration();hydrate();renderAdminDashboard();toast("Вы вошли в админку Rooms.");return}
+          if(payload.user?.role==="accountant"){pending=null;hydrate();renderAccountantDashboard();toast("Вы вошли в бухгалтерию Rooms.");return}
           if(payload.user?.role==="partner"){pending=null;await syncPartnerApiContext();hydrate();routePartnerAccount(currentPartnerAccount());toast(`С возвращением, ${acc.name||acc.venueTitle}.`);return}
           await syncApiBookings();
           if(pending){await saveBooking(pending);closeModal()}else renderProfile();
@@ -4315,7 +4357,7 @@
     document.addEventListener("input",e=>{if(e.target.id==="partnerCity")updateCityProof("partner",e.target.value)});
     document.addEventListener("change",e=>{if(e.target.matches('#registerForm [name="city"]'))updateCityProof("client",e.target.value,E.modalContent)});
     document.addEventListener("submit",e=>{if(e.target.id==="bookingChatForm"){e.preventDefault();submitBookingChat(e.target)}});
-    document.addEventListener("submit",e=>{if(e.target.id==="notificationSettingsForm"){e.preventDefault();submitNotificationSettings(e.target,e.submitter);return}if(e.target.matches("[data-booking-note-form]")){e.preventDefault();saveBookingNote(e.target)}if(e.target.matches("[data-review-reply-form]")){e.preventDefault();saveReviewReply(e.target)}if(e.target.id==="supportForm"){e.preventDefault();submitSupportCase(e.target)}if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="paymentForm"){e.preventDefault();submitPayment(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerPasswordChange"){e.preventDefault();changePartnerPassword(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}if(e.target.id==="manualBookingEdit"){e.preventDefault();saveManualBookingEdit(e.target)}if(e.target.id==="manualBookingCancel"){e.preventDefault();cancelManualBooking(e.target)}});
+    document.addEventListener("submit",e=>{if(e.target.matches("[data-moderation-reject]")){e.preventDefault();updateModeration(`${e.target.dataset.moderationReject}|rejected`,new FormData(e.target).get("comment"));return}if(e.target.id==="notificationSettingsForm"){e.preventDefault();submitNotificationSettings(e.target,e.submitter);return}if(e.target.matches("[data-booking-note-form]")){e.preventDefault();saveBookingNote(e.target)}if(e.target.matches("[data-review-reply-form]")){e.preventDefault();saveReviewReply(e.target)}if(e.target.id==="supportForm"){e.preventDefault();submitSupportCase(e.target)}if(e.target.id==="bookingForm"){e.preventDefault();submitBooking(e.target)}if(e.target.id==="proposalForm"){e.preventDefault();submitProposal(e.target)}if(e.target.id==="cancelBookingForm"){e.preventDefault();submitCancelBooking(e.target)}if(e.target.id==="paymentForm"){e.preventDefault();submitPayment(e.target)}if(e.target.id==="reviewForm"){e.preventDefault();submitReview(e.target)}if(e.target.id==="loginForm"){e.preventDefault();login(e.target)}if(e.target.id==="registerForm"){e.preventDefault();register(e.target)}if(e.target.id==="personalDataForm"){e.preventDefault();savePersonalData(e.target)}if(e.target.id==="partnerLoginForm"){e.preventDefault();partnerLogin(e.target)}if(e.target.id==="partnerPasswordChange"){e.preventDefault();changePartnerPassword(e.target)}if(e.target.id==="partnerVenueEdit"){e.preventDefault();savePartnerVenue(e.target)}if(e.target.id==="partnerSpecialHours"){e.preventDefault();savePartnerSpecialHours(e.target)}if(e.target.id==="partnerRoomCreate"){e.preventDefault();createPartnerRoom(e.target)}if(e.target.id==="partnerRoomEdit"){e.preventDefault();savePartnerRoom(e.target)}if(e.target.id==="partnerBusyCreate"){e.preventDefault();createPartnerManualBusy(e.target)}if(e.target.id==="manualBookingEdit"){e.preventDefault();saveManualBookingEdit(e.target)}if(e.target.id==="manualBookingCancel"){e.preventDefault();cancelManualBooking(e.target)}});
     document.addEventListener("change",e=>{if(e.target.matches("[data-import-migration]")){handleMigrationFile(e.target);return}if(e.target.matches("[data-manual-edit-room],[data-manual-edit-date]")){syncManualEditSchedule(e.target.form);return}if(e.target.matches("[data-busy-type]")){const fields=e.target.form?.querySelector("[data-manual-booking-fields]"),manual=e.target.value==="manual";if(fields)fields.hidden=!manual;fields?.querySelectorAll("[data-manual-required]").forEach(input=>input.required=manual);return}if(e.target.matches("[data-special-mode]")){const fields=e.target.form?.querySelector("[data-special-fields]");if(fields)fields.hidden=e.target.value!=="custom";return}if(e.target.matches('[name^="work_"][name$="_enabled"]')){e.target.closest(".schedule-day")?.classList.toggle("off",!e.target.checked);return}if(e.target.matches("[data-proposal-date],[data-proposal-time],[data-proposal-hours]")){updateProposalForm(e.target.form);return}if(e.target.matches("[data-booking-date],[data-booking-time],[data-booking-hours],[data-booking-service],[data-booking-extra-room]")){updateBookingForm(e.target.form);return}if(e.target.matches("[data-detail-service]")){toggleDetailService(e.target);return}if(e.target.matches("[data-detail-extra-room]")){toggleDetailExtraRoom(e.target);return}if(e.target.matches("[data-detail-date]")){state.date=e.target.value;state.time="";E.date.value=state.date;syncDateDisplay();renderSpace(e.target.dataset.detailDate,true)}if(e.target.matches("[data-detail-hours]")){state.hours=Number(e.target.value);E.hours.value=String(state.hours);renderSpace(e.target.dataset.detailHours,true)}if(e.target.matches("[data-admin-booking-event]")){adminBookingEventFilter=e.target.value;renderAdminDashboard(true);return}if(e.target.matches("[data-partner-booking-event]")){partnerBookingEventFilter=e.target.value;renderPartnerCabinet(true);return}if(e.target.matches("[data-partner-busy-room]")){state.partnerRoom=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-partner-busy-date]")){state.partnerDate=e.target.value;state.partnerWeekStart=e.target.value;renderPartnerCabinet(true)}if(e.target.matches("[data-photo-upload]"))handlePhotoUpload(e.target)});
     document.addEventListener("click",e=>{
       const infoBack=e.target.closest("[data-info-back]");if(infoBack){restoreInfoPage();return}

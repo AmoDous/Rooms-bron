@@ -26,6 +26,29 @@ export interface PartnerModerationChange {
   createdAt: string;
 }
 
+export type ModerationStatus = "pending" | "approved" | "rejected";
+
+export interface AdminModerationRecord extends PartnerModerationChange {
+  targetType: "venue" | "room";
+  targetId: string;
+  targetTitle: string;
+  venueId: string;
+  venueTitle: string;
+  submittedById: string | null;
+  submittedByName: string | null;
+  submittedByEmail: string | null;
+  status: ModerationStatus;
+  reviewComment: string | null;
+  reviewedById: string | null;
+  reviewedAt: string | null;
+}
+
+export interface AdminModerationQuery {
+  status: ModerationStatus | "all";
+  limit: number;
+  venueId?: string;
+}
+
 export interface PartnerVenueRecord extends Venue {
   venueType: string;
   contactName: string;
@@ -103,6 +126,13 @@ export interface PartnerCatalogRepository {
     input: PartnerScheduleExceptionWrite,
   ): Promise<PartnerVenueRecord | null>;
   deleteScheduleException(venueId: string, actorId: string, date: string): Promise<PartnerVenueRecord | null>;
+  listModeration(query: AdminModerationQuery): Promise<AdminModerationRecord[]>;
+  decideModeration(
+    moderationId: string,
+    actorId: string,
+    decision: Exclude<ModerationStatus, "pending">,
+    comment: string,
+  ): Promise<AdminModerationRecord | null>;
 }
 
 export class PartnerCatalogError extends Error {
@@ -193,6 +223,34 @@ interface ModerationRow extends QueryResultRow {
   before_data: Record<string, unknown>;
   proposed_data: Record<string, unknown>;
   created_at: Date | string;
+}
+
+interface AdminModerationRow extends ModerationRow {
+  venue_id: string | null;
+  target_type: "venue" | "room";
+  target_id: string;
+  target_title: string;
+  target_venue_id: string;
+  venue_title: string;
+  submitted_by: string | null;
+  submitted_by_name: string | null;
+  submitted_by_email: string | null;
+  status: ModerationStatus;
+  reviewed_by: string | null;
+  review_comment: string | null;
+  reviewed_at: Date | string | null;
+}
+
+interface MemoryModerationRecord {
+  change: PartnerModerationChange;
+  targetType: "venue" | "room";
+  targetId: string;
+  venueId: string;
+  submittedById: string;
+  status: ModerationStatus;
+  reviewComment: string | null;
+  reviewedById: string | null;
+  reviewedAt: string | null;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -309,6 +367,57 @@ function moderationFromRow(row: ModerationRow | undefined): PartnerModerationCha
   } : null;
 }
 
+function adminModerationFromRow(row: AdminModerationRow): AdminModerationRecord {
+  return {
+    id: row.id,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    targetTitle: row.target_title,
+    venueId: row.target_venue_id,
+    venueTitle: row.venue_title,
+    submittedById: row.submitted_by,
+    submittedByName: row.submitted_by_name,
+    submittedByEmail: row.submitted_by_email,
+    fields: [...row.fields],
+    beforeData: cloneObject(row.before_data),
+    proposedData: cloneObject(row.proposed_data),
+    status: row.status,
+    reviewComment: row.review_comment,
+    reviewedById: row.reviewed_by,
+    reviewedAt: row.reviewed_at ? isoDateTime(row.reviewed_at) : null,
+    createdAt: isoDateTime(row.created_at),
+  };
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numberValue(value: unknown): number {
+  return numeric(typeof value === "number" || typeof value === "string" ? value : 0);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function paymentMethodsValue(value: unknown): PaymentMethod[] {
+  return stringArray(value).filter((item): item is PaymentMethod => item === "card" || item === "cash");
+}
+
+function servicesValue(value: unknown): RoomService[] {
+  if (!Array.isArray(value)) return [];
+  return normalizedServices(value.map((item) => {
+    const service = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      ...(typeof service.id === "string" ? { id: service.id } : {}),
+      name: textValue(service.name),
+      description: textValue(service.description),
+      price: numberValue(service.price),
+    };
+  }).filter((service) => service.name));
+}
+
 function defaultWeekSchedule(opensAtHour = 10, closesAtHour = 24): PartnerWeekScheduleDay[] {
   return Array.from({ length: 7 }, (_, index) => ({
     weekday: index + 1,
@@ -327,6 +436,68 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
   private readonly exceptions = new Map<string, PartnerScheduleException[]>();
   private readonly venueModeration = new Map<string, PartnerModerationChange>();
   private readonly roomModeration = new Map<string, PartnerModerationChange>();
+  private readonly moderationRecords = new Map<string, MemoryModerationRecord>();
+
+  private queueMemoryModeration(
+    targetType: "venue" | "room",
+    targetId: string,
+    venueId: string,
+    actorId: string,
+    beforeData: Record<string, unknown>,
+    proposedData: Record<string, unknown>,
+  ): PartnerModerationChange | null {
+    const target = targetType === "venue" ? this.venueModeration : this.roomModeration;
+    const current = target.get(targetId);
+    const original = current?.beforeData ?? structuredClone(beforeData);
+    const proposed = { ...(current?.proposedData ?? {}), ...structuredClone(proposedData) };
+    const fields = changedFields(original, proposed);
+    if (!fields.length) {
+      if (current) this.moderationRecords.delete(current.id);
+      target.delete(targetId);
+      return null;
+    }
+    const change: PartnerModerationChange = {
+      id: current?.id ?? randomUUID(),
+      fields,
+      beforeData: structuredClone(original),
+      proposedData: proposed,
+      createdAt: current?.createdAt ?? new Date().toISOString(),
+    };
+    target.set(targetId, change);
+    this.moderationRecords.set(change.id, {
+      change,
+      targetType,
+      targetId,
+      venueId,
+      submittedById: actorId,
+      status: "pending",
+      reviewComment: null,
+      reviewedById: null,
+      reviewedAt: null,
+    });
+    return change;
+  }
+
+  private memoryAdminRecord(item: MemoryModerationRecord): AdminModerationRecord | null {
+    const venue = this.venues.get(item.venueId);
+    const target = item.targetType === "venue" ? venue : this.rooms.get(item.targetId);
+    if (!venue || !target) return null;
+    return {
+      ...structuredClone(item.change),
+      targetType: item.targetType,
+      targetId: item.targetId,
+      targetTitle: target.title,
+      venueId: venue.id,
+      venueTitle: venue.title,
+      submittedById: item.submittedById,
+      submittedByName: null,
+      submittedByEmail: null,
+      status: item.status,
+      reviewComment: item.reviewComment,
+      reviewedById: item.reviewedById,
+      reviewedAt: item.reviewedAt,
+    };
+  }
 
   async getVenue(venueId: string): Promise<PartnerVenueRecord | null> {
     const venue = this.venues.get(venueId);
@@ -344,7 +515,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     };
   }
 
-  async updateVenue(venueId: string, _actorId: string, input: PartnerVenueWrite): Promise<PartnerVenueRecord | null> {
+  async updateVenue(venueId: string, actorId: string, input: PartnerVenueWrite): Promise<PartnerVenueRecord | null> {
     const venue = this.venues.get(venueId);
     if (!venue) return null;
     const before = {
@@ -358,11 +529,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
       paymentMethods: venue.paymentMethods,
     };
     const proposed = venueProposal(input);
-    const fields = changedFields(before, proposed);
-    if (fields.length) this.venueModeration.set(venueId, {
-      id: randomUUID(), fields, beforeData: before, proposedData: proposed, createdAt: new Date().toISOString(),
-    });
-    else this.venueModeration.delete(venueId);
+    this.queueMemoryModeration("venue", venueId, venueId, actorId, before, proposed);
     this.contacts.set(venueId, {
       venueType: input.venueType.trim(), name: input.contactName.trim(), phone: input.contactPhone.trim(), email: input.contactEmail.trim(),
     });
@@ -377,7 +544,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     }));
   }
 
-  async createRoom(venueId: string, _actorId: string, input: PartnerRoomWrite): Promise<PartnerRoomRecord> {
+  async createRoom(venueId: string, actorId: string, input: PartnerRoomWrite): Promise<PartnerRoomRecord> {
     const id = randomUUID();
     const services = normalizedServices(input.services);
     const room: Room = {
@@ -409,13 +576,11 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     };
     this.rooms.set(id, room);
     const proposed = { ...roomProposal(input, services), publicationRequested: true };
-    this.roomModeration.set(id, {
-      id: randomUUID(), fields: Object.keys(proposed), beforeData: {}, proposedData: proposed, createdAt: new Date().toISOString(),
-    });
+    this.queueMemoryModeration("room", id, venueId, actorId, {}, proposed);
     return { ...structuredClone(room), pendingChange: structuredClone(this.roomModeration.get(id) ?? null) };
   }
 
-  async updateRoom(venueId: string, roomId: string, _actorId: string, input: PartnerRoomWrite): Promise<PartnerRoomRecord | null> {
+  async updateRoom(venueId: string, roomId: string, actorId: string, input: PartnerRoomWrite): Promise<PartnerRoomRecord | null> {
     const room = this.rooms.get(roomId);
     if (!room || room.venueId !== venueId) return null;
     const services = normalizedServices(input.services);
@@ -448,11 +613,12 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     this.rooms.set(roomId, next);
     if (fields.length || (!published && input.status !== "hidden")) {
       const proposedData = { ...proposed, ...(!published && input.status !== "hidden" ? { publicationRequested: true } : {}) };
-      this.roomModeration.set(roomId, {
-        id: this.roomModeration.get(roomId)?.id ?? randomUUID(), fields: changedFields(before, proposedData),
-        beforeData: before, proposedData, createdAt: this.roomModeration.get(roomId)?.createdAt ?? new Date().toISOString(),
-      });
-    } else this.roomModeration.delete(roomId);
+      this.queueMemoryModeration("room", roomId, venueId, actorId, before, proposedData);
+    } else {
+      const current = this.roomModeration.get(roomId);
+      if (current) this.moderationRecords.delete(current.id);
+      this.roomModeration.delete(roomId);
+    }
     return { ...structuredClone(next), pendingChange: structuredClone(this.roomModeration.get(roomId) ?? null) };
   }
 
@@ -473,6 +639,87 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     if (!this.venues.has(venueId)) return null;
     this.exceptions.set(venueId, (this.exceptions.get(venueId) ?? []).filter((item) => item.date !== date));
     return this.getVenue(venueId);
+  }
+
+  async listModeration(query: AdminModerationQuery): Promise<AdminModerationRecord[]> {
+    return [...this.moderationRecords.values()]
+      .filter((item) => query.status === "all" || item.status === query.status)
+      .filter((item) => !query.venueId || item.venueId === query.venueId)
+      .map((item) => this.memoryAdminRecord(item))
+      .filter((item): item is AdminModerationRecord => item !== null)
+      .sort((left, right) => Number(right.status === "pending") - Number(left.status === "pending")
+        || right.createdAt.localeCompare(left.createdAt))
+      .slice(0, query.limit);
+  }
+
+  async decideModeration(
+    moderationId: string,
+    actorId: string,
+    decision: Exclude<ModerationStatus, "pending">,
+    comment: string,
+  ): Promise<AdminModerationRecord | null> {
+    const item = this.moderationRecords.get(moderationId);
+    if (!item) return null;
+    if (item.status !== "pending") {
+      throw new PartnerCatalogError("MODERATION_ALREADY_REVIEWED", "Это изменение уже обработано другим администратором.");
+    }
+    if (item.targetType === "venue") {
+      const venue = this.venues.get(item.targetId);
+      if (!venue) return null;
+      if (decision === "approved") {
+        const data = item.change.proposedData;
+        this.venues.set(item.targetId, {
+          ...venue,
+          title: textValue(data.title),
+          city: textValue(data.city),
+          address: textValue(data.address),
+          description: textValue(data.description),
+          rules: textValue(data.rules),
+          amenities: stringArray(data.amenities),
+          paymentMethods: paymentMethodsValue(data.paymentMethods),
+        });
+        const contact = this.contacts.get(item.targetId) ?? { venueType: "", name: "", phone: "", email: "" };
+        this.contacts.set(item.targetId, { ...contact, venueType: textValue(data.venueType) });
+      }
+      this.venueModeration.delete(item.targetId);
+    } else {
+      const room = this.rooms.get(item.targetId);
+      if (!room) return null;
+      const data = decision === "approved" ? item.change.proposedData : item.change.beforeData;
+      const hasSnapshot = typeof data.title === "string";
+      const next = hasSnapshot ? {
+        ...room,
+        title: textValue(data.title),
+        subtitle: textValue(data.subtitle),
+        type: textValue(data.type),
+        description: textValue(data.description),
+        rules: textValue(data.rules),
+        promotion: textValue(data.promotion) || null,
+        capacityMin: numberValue(data.capacityMin),
+        capacityMax: numberValue(data.capacityMax),
+        pricePerHour: numberValue(data.pricePerHour),
+        features: stringArray(data.features),
+        tags: stringArray(data.tags),
+        services: servicesValue(data.services),
+      } : room;
+      const publicationRequested = item.change.proposedData.publicationRequested === true;
+      this.rooms.set(item.targetId, {
+        ...next,
+        ...(publicationRequested
+          ? { publicationStatus: decision === "approved" ? "published" as const : room.publicationStatus === "published" ? "published" as const : "hidden" as const }
+          : {}),
+      });
+      this.roomModeration.delete(item.targetId);
+    }
+    const decided: MemoryModerationRecord = {
+      ...item,
+      status: decision,
+      reviewComment: comment.trim() || null,
+      reviewedById: actorId,
+      reviewedAt: new Date().toISOString(),
+    };
+    this.moderationRecords.set(moderationId, decided);
+    return this.memoryAdminRecord(decided);
   }
 }
 
@@ -784,6 +1031,158 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
       client.release();
     }
     return this.getVenue(venueId);
+  }
+
+  async listModeration(query: AdminModerationQuery): Promise<AdminModerationRecord[]> {
+    const result = await this.pool.query<AdminModerationRow>(`/* rooms:admin-moderation-list */
+      select m.id::text, m.venue_id::text, m.room_id::text, m.fields, m.before_data, m.proposed_data,
+        m.status::text, m.submitted_by::text, submitter.name as submitted_by_name,
+        submitter.email::text as submitted_by_email, m.reviewed_by::text, m.review_comment,
+        m.reviewed_at, m.created_at,
+        case when m.room_id is null then 'venue' else 'room' end as target_type,
+        coalesce(m.venue_id, m.room_id)::text as target_id,
+        coalesce(venue.title, room.title) as target_title,
+        coalesce(venue.id, room_venue.id)::text as target_venue_id,
+        coalesce(venue.title, room_venue.title) as venue_title
+      from moderation_requests m
+      left join venues venue on venue.id = m.venue_id
+      left join rooms room on room.id = m.room_id
+      left join venues room_venue on room_venue.id = room.venue_id
+      left join users submitter on submitter.id = m.submitted_by
+      where ($1 = 'all' or m.status::text = $1)
+        and ($3::uuid is null or coalesce(m.venue_id, room.venue_id) = $3::uuid)
+      order by (m.status = 'pending') desc, m.created_at desc
+      limit $2
+    `, [query.status, query.limit, query.venueId ?? null]);
+    return result.rows.map(adminModerationFromRow);
+  }
+
+  async decideModeration(
+    moderationId: string,
+    actorId: string,
+    decision: Exclude<ModerationStatus, "pending">,
+    comment: string,
+  ): Promise<AdminModerationRecord | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const currentResult = await client.query<AdminModerationRow>(`/* rooms:lock-admin-moderation */
+        select m.id::text, m.venue_id::text, m.room_id::text, m.fields, m.before_data, m.proposed_data,
+          m.status::text, m.submitted_by::text, submitter.name as submitted_by_name,
+          submitter.email::text as submitted_by_email, m.reviewed_by::text, m.review_comment,
+          m.reviewed_at, m.created_at,
+          case when m.room_id is null then 'venue' else 'room' end as target_type,
+          coalesce(m.venue_id, m.room_id)::text as target_id,
+          coalesce(venue.title, room.title) as target_title,
+          coalesce(venue.id, room_venue.id)::text as target_venue_id,
+          coalesce(venue.title, room_venue.title) as venue_title
+        from moderation_requests m
+        left join venues venue on venue.id = m.venue_id
+        left join rooms room on room.id = m.room_id
+        left join venues room_venue on room_venue.id = room.venue_id
+        left join users submitter on submitter.id = m.submitted_by
+        where m.id = $1::uuid
+        for update of m
+      `, [moderationId]);
+      const current = currentResult.rows[0];
+      if (!current) {
+        await client.query("rollback");
+        return null;
+      }
+      if (current.status !== "pending") {
+        throw new PartnerCatalogError("MODERATION_ALREADY_REVIEWED", "Это изменение уже обработано другим администратором.");
+      }
+      if (current.target_type === "venue" && decision === "approved") {
+        const data = current.proposed_data;
+        await client.query(`/* rooms:approve-venue-moderation */
+          update venues set title = $2, city = $3, address = $4, venue_type = nullif($5,''),
+            description = $6, rules = $7, amenities = $8, payment_methods = $9,
+            updated_at = now()
+          where id = $1::uuid
+        `, [
+          current.target_id, textValue(data.title), textValue(data.city), textValue(data.address),
+          textValue(data.venueType), textValue(data.description), textValue(data.rules),
+          stringArray(data.amenities), paymentMethodsValue(data.paymentMethods),
+        ]);
+      }
+      if (current.target_type === "room") {
+        const publicationRequested = current.proposed_data.publicationRequested === true;
+        if (decision === "approved") {
+          await this.applyRoomModerationSnapshot(client, current.target_id, current.proposed_data);
+          if (publicationRequested) {
+            await client.query("update rooms set status = 'published', updated_at = now() where id = $1::uuid", [current.target_id]);
+          }
+        } else {
+          await this.applyRoomModerationSnapshot(client, current.target_id, current.before_data);
+          if (publicationRequested) {
+            await client.query("update rooms set status = case when status = 'published' then status else 'hidden' end, updated_at = now() where id = $1::uuid", [current.target_id]);
+          }
+        }
+      }
+      await client.query(`/* rooms:complete-admin-moderation */
+        update moderation_requests set status = $2::moderation_status, reviewed_by = $3::uuid,
+          review_comment = nullif($4,''), reviewed_at = now()
+        where id = $1::uuid
+      `, [moderationId, decision, actorId, comment.trim()]);
+      await client.query(`insert into audit_log (actor_id, actor_role, action, entity_type, entity_id, before_data, after_data)
+        values ($1::uuid,'admin',$2,'moderation_request',$3,$4::jsonb,$5::jsonb)
+      `, [
+        actorId,
+        decision === "approved" ? "moderation_approved" : "moderation_rejected",
+        moderationId,
+        JSON.stringify({ status: "pending", targetType: current.target_type, targetId: current.target_id }),
+        JSON.stringify({ status: decision, comment: comment.trim() || null }),
+      ]);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.moderationById(moderationId);
+  }
+
+  private async moderationById(moderationId: string): Promise<AdminModerationRecord | null> {
+    const result = await this.pool.query<AdminModerationRow>(`/* rooms:admin-moderation-by-id */
+      select m.id::text, m.venue_id::text, m.room_id::text, m.fields, m.before_data, m.proposed_data,
+        m.status::text, m.submitted_by::text, submitter.name as submitted_by_name,
+        submitter.email::text as submitted_by_email, m.reviewed_by::text, m.review_comment,
+        m.reviewed_at, m.created_at,
+        case when m.room_id is null then 'venue' else 'room' end as target_type,
+        coalesce(m.venue_id, m.room_id)::text as target_id,
+        coalesce(venue.title, room.title) as target_title,
+        coalesce(venue.id, room_venue.id)::text as target_venue_id,
+        coalesce(venue.title, room_venue.title) as venue_title
+      from moderation_requests m
+      left join venues venue on venue.id = m.venue_id
+      left join rooms room on room.id = m.room_id
+      left join venues room_venue on room_venue.id = room.venue_id
+      left join users submitter on submitter.id = m.submitted_by
+      where m.id = $1::uuid
+    `, [moderationId]);
+    return result.rows[0] ? adminModerationFromRow(result.rows[0]) : null;
+  }
+
+  private async applyRoomModerationSnapshot(
+    client: PoolClient,
+    roomId: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof data.title !== "string") return;
+    const services = servicesValue(data.services);
+    await client.query(`/* rooms:apply-room-moderation */
+      update rooms set title = $2, subtitle = $3, room_type = $4, description = $5, rules = $6,
+        promotion = nullif($7,''), capacity_min = $8, capacity_max = $9, price_per_hour = $10,
+        features = $11, tags = $12, updated_at = now()
+      where id = $1::uuid
+    `, [
+      roomId, textValue(data.title), textValue(data.subtitle), textValue(data.type),
+      textValue(data.description), textValue(data.rules), textValue(data.promotion),
+      numberValue(data.capacityMin), numberValue(data.capacityMax), numberValue(data.pricePerHour),
+      stringArray(data.features), stringArray(data.tags),
+    ]);
+    await this.replaceServices(client, roomId, services);
   }
 
   private roomFromRow(
