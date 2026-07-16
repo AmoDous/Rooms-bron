@@ -269,6 +269,23 @@ export class MemoryBookingRepository implements BookingRepository {
     return partnerView(booking);
   }
 
+  paymentBooking(clientId: string, bookingId: string): BookingRecord | null {
+    this.releaseExpired();
+    const booking = this.bookings.find((item) => item.id === bookingId && item.clientId === clientId);
+    return booking ? structuredClone(booking) : null;
+  }
+
+  completePayment(clientId: string, bookingId: string): BookingRecord | null {
+    this.releaseExpired();
+    const booking = this.bookings.find((item) => item.id === bookingId && item.clientId === clientId);
+    if (!booking) return null;
+    if (booking.status === "paid") return structuredClone(booking);
+    if (booking.status !== "awaiting_payment") return structuredClone(booking);
+    booking.status = "paid";
+    booking.paymentHoldExpiresAt = null;
+    return structuredClone(booking);
+  }
+
   private partnerBooking(partnerId: string, bookingId: string): BookingRecord | null {
     const venue = this.partnerVenues.get(partnerId);
     return venue ? this.bookings.find((booking) => booking.id === bookingId && booking.venue.id === venue.id) ?? null : null;

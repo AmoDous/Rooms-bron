@@ -2,12 +2,14 @@ import { Pool, type PoolConfig } from "pg";
 import { MemoryAuthRepository, PostgresAuthRepository, type AuthRepository } from "./auth.js";
 import { MemoryBookingRepository, PostgresBookingRepository, type BookingRepository } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
+import { MemoryPaymentRepository, PostgresPaymentRepository, type PaymentRepository } from "./payments.js";
 import { PostgresCatalogRepository } from "./postgresCatalog.js";
 
 export interface CatalogStorage {
   repository: CatalogRepository;
   authRepository: AuthRepository;
   bookingRepository: BookingRepository;
+  paymentRepository: PaymentRepository;
   close(): Promise<void>;
 }
 
@@ -40,10 +42,12 @@ export function postgresPoolConfig(env: NodeJS.ProcessEnv = process.env): PoolCo
 export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env): Promise<CatalogStorage> {
   const connectionString = env.DATABASE_URL?.trim();
   if (!connectionString) {
+    const bookingRepository = new MemoryBookingRepository();
     return {
       repository: new MemoryCatalogRepository(),
       authRepository: new MemoryAuthRepository(),
-      bookingRepository: new MemoryBookingRepository(),
+      bookingRepository,
+      paymentRepository: new MemoryPaymentRepository(bookingRepository),
       close: async () => undefined,
     };
   }
@@ -58,6 +62,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     repository: new PostgresCatalogRepository(pool),
     authRepository: new PostgresAuthRepository(pool),
     bookingRepository: new PostgresBookingRepository(pool),
+    paymentRepository: new PostgresPaymentRepository(pool),
     close: () => pool.end(),
   };
 }

@@ -436,6 +436,36 @@ paths:
         '409':
           $ref: '#/components/responses/SlotConflict'
 
+  /v1/payments/{paymentId}/demo-complete:
+    post:
+      tags: [Payments]
+      operationId: completeDemoPayment
+      description: Local development adapter. Disabled when ENABLE_DEMO_PAYMENTS is false.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The hold was atomically converted into a paid booking
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment, booking]
+                properties:
+                  payment: {$ref: '#/components/schemas/PaymentIntent'}
+                  booking: {$ref: '#/components/schemas/Booking'}
+        '409':
+          description: Hold expired or booking state changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v1/payments/webhooks/sber:
     post:
       tags: [Payments]
@@ -1044,13 +1074,21 @@ components:
 
     PaymentIntent:
       type: object
-      required: [paymentId, amount, currency, redirectUrl, expiresAt]
+      required: [paymentId, bookingId, status, provider, providerPaymentId, amount, currency, redirectUrl, expiresAt, createdAt]
       properties:
         paymentId: {type: string, format: uuid}
+        bookingId: {type: string, format: uuid}
+        status: {type: string, enum: [pending, paid, failed]}
+        provider: {type: string, enum: [rooms_demo]}
+        providerPaymentId: {type: string}
         amount: {type: number}
         currency: {type: string, const: RUB}
         redirectUrl: {type: string, format: uri}
         expiresAt: {type: string, format: date-time}
+        maskedCard: {type: [string, 'null']}
+        receiptNumber: {type: [string, 'null']}
+        createdAt: {type: string, format: date-time}
+        paidAt: {type: [string, 'null'], format: date-time}
 
     NotificationSettings:
       type: object

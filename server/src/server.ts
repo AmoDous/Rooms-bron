@@ -7,6 +7,9 @@ const port = Number(process.env.PORT || 3000);
 const publicSiteUrl = process.env.PUBLIC_SITE_URL?.trim() || "https://amodous.github.io/Rooms-bron";
 const authTokenSecret = process.env.AUTH_TOKEN_SECRET?.trim() || "";
 const secureCookies = String(process.env.AUTH_COOKIE_SECURE || "false").trim().toLowerCase() === "true";
+const enableDemoPayments = process.env.ENABLE_DEMO_PAYMENTS === undefined
+  ? process.env.NODE_ENV !== "production"
+  : String(process.env.ENABLE_DEMO_PAYMENTS).trim().toLowerCase() === "true";
 const corsOrigins = String(process.env.CORS_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000,http://localhost:4173,http://127.0.0.1:4173,https://amodous.github.io")
   .split(",")
   .map((origin) => origin.trim())
@@ -27,8 +30,10 @@ const app = buildApp({
   repository: storage.repository,
   authRepository: storage.authRepository,
   bookingRepository: storage.bookingRepository,
+  paymentRepository: storage.paymentRepository,
   authTokenSecret: authTokenSecret || "rooms-local-development-secret-change-me-2026",
   secureCookies,
+  enableDemoPayments,
 });
 app.addHook("onClose", () => storage.close());
 

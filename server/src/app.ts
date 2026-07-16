@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AuthConflictError, AuthService, MemoryAuthRepository, normalizeRussianPhone, type AuthRepository, type IssuedAuthSession } from "./auth.js";
 import { MemoryBookingRepository, type BookingRepository, type BookingStatusGroup, type PartnerBookingStatusGroup } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
+import { MemoryPaymentRepository, type PaymentRepository } from "./payments.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import type {
   AvailabilityWindow,
@@ -24,8 +25,10 @@ interface AppConfig {
   repository: CatalogRepository;
   authRepository: AuthRepository;
   bookingRepository: BookingRepository;
+  paymentRepository: PaymentRepository;
   authTokenSecret: string;
   secureCookies: boolean;
+  enableDemoPayments: boolean;
 }
 
 interface SearchQuery {
@@ -115,6 +118,10 @@ interface PartnerBookingQuery {
 
 interface BookingParams {
   bookingId: string;
+}
+
+interface PaymentParams {
+  paymentId: string;
 }
 
 interface PartnerBookingRejectBody {
@@ -276,15 +283,21 @@ function errorPayload(code: string, message: string, details: unknown[] = []) {
 }
 
 export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
+  const bookingRepository = overrides.bookingRepository ?? new MemoryBookingRepository();
+  const paymentRepository = overrides.paymentRepository
+    ?? (bookingRepository instanceof MemoryBookingRepository ? new MemoryPaymentRepository(bookingRepository) : null);
+  if (!paymentRepository) throw new Error("paymentRepository is required with a non-memory booking repository.");
   const config: AppConfig = {
     publicSiteUrl: overrides.publicSiteUrl ?? "https://amodous.github.io/Rooms-bron",
     corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
     logger: overrides.logger ?? false,
     repository: overrides.repository ?? new MemoryCatalogRepository(),
     authRepository: overrides.authRepository ?? new MemoryAuthRepository(),
-    bookingRepository: overrides.bookingRepository ?? new MemoryBookingRepository(),
+    bookingRepository,
+    paymentRepository,
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
     secureCookies: overrides.secureCookies ?? false,
+    enableDemoPayments: overrides.enableDemoPayments ?? true,
   };
   const app = Fastify({ logger: config.logger });
   const auth = new AuthService(config.authRepository, config.authTokenSecret);
@@ -615,6 +628,42 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       userAgent: request.headers["user-agent"] ?? null,
     });
     return reply.code(201).send(booking);
+  });
+
+  app.post<{ Params: BookingParams }>("/v1/bookings/:bookingId/payment-intent", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    if (!config.enableDemoPayments) throw new ApiError(503, "PAYMENTS_NOT_CONFIGURED", "Онлайн-оплата временно недоступна.");
+    const payment = await config.paymentRepository.createIntent(current.user.id, request.params.bookingId);
+    return reply.code(201).send(payment);
+  });
+
+  app.post<{ Params: PaymentParams }>("/v1/payments/:paymentId/demo-complete", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["paymentId"],
+        properties: { paymentId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    if (!config.enableDemoPayments) throw new ApiError(404, "DEMO_PAYMENTS_DISABLED", "Демонстрационный платёжный маршрут отключён.");
+    const payment = await config.paymentRepository.completeDemo(current.user.id, request.params.paymentId);
+    const booking = (await config.bookingRepository.listByClient(current.user.id, "all")).find((item) => item.id === payment.bookingId);
+    if (!booking) throw new ApiError(409, "BOOKING_STATE_CHANGED", "Статус брони изменился. Обновите личный кабинет.");
+    return { payment, booking };
   });
 
   app.get("/v1/partner/venue", async (request) => {

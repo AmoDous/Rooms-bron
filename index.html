@@ -3924,7 +3924,7 @@
       if(!paid)return false;
       saveAdminBookings(list);logActivity("payment","Клиент внёс предоплату",`${paid.id} · ${paid.room} · ${money(transaction.amount)} · ${transaction.id}`,"client");hydrate();notifyPartnerPayment(paid);return true;
     }
-    function submitPayment(form){
+    async function submitPayment(form){
       const id=form.dataset.booking,booking=read(store.bookings,[]).find(b=>b.id===id),acc=current();
       if(!booking)return toast("Заявка не найдена.");
       if(paymentForBooking(id))return toast("Эта предоплата уже внесена.");
@@ -3936,7 +3936,27 @@
       if(!expiryValid(expiry))return toast("Укажите будущий срок карты в формате ММ/ГГ.");
       if(!/^\d{3,4}$/.test(cvc))return toast("Проверьте CVC-код.");
       if(!/^\S+@\S+\.\S+$/.test(email))return toast("Укажите email для электронного чека.");
-      const amount=bookingFinance(booking).prepay,provider=demoPaymentAdapter(booking,amount,card.slice(-4)),paidAt=new Date().toISOString();
+      const amount=bookingFinance(booking).prepay,paidAt=new Date().toISOString();
+      if(apiState.connected&&acc?.api&&booking.server){
+        const submit=form.querySelector('button[type="submit"]'),label=submit?.textContent;
+        if(submit){submit.disabled=true;submit.textContent="Проводим оплату..."}
+        try{
+          const intent=await apiRequest(`/v1/bookings/${booking.id}/payment-intent`,{method:"POST",auth:true});
+          const result=await apiRequest(`/v1/payments/${intent.paymentId}/demo-complete`,{method:"POST",auth:true});
+          const payment=result.payment,paidBooking=localBookingFromApi(result.booking),completedAt=payment.paidAt||new Date().toISOString();
+          write(store.bookings,[paidBooking,...read(store.bookings,[]).filter(item=>item.id!==paidBooking.id)].slice(0,100));
+          const tx={id:payment.paymentId,bookingId:booking.id,roomId:booking.roomId,venue:booking.venue,room:booking.room,name:booking.name,phone:booking.phone,email,amount:Number(payment.amount),status:"paid",provider:payment.provider,providerPaymentId:payment.providerPaymentId,orderId:payment.providerPaymentId,maskedCard:payment.maskedCard||"•••• 4242",createdAt:payment.createdAt||completedAt,paidAt:completedAt,receipt:{number:payment.receiptNumber||`RCP-${Date.now().toString(36).toUpperCase()}`,status:"demo",seller:"Rooms · прототип сервиса бронирования",buyer:email,items:[{name:`Предоплата за бронирование ${booking.room}`,quantity:1,price:Number(payment.amount),amount:Number(payment.amount)}],amount:Number(payment.amount),tax:"без НДС",createdAt:completedAt}};
+          savePaymentTransactions([tx,...paymentTransactions().filter(item=>item.id!==tx.id&&item.bookingId!==booking.id)]);
+          recordConsent({subjectId:booking.id,phone:booking.phone,email,context:"payment",documents:["terms","privacy","payment"]});
+          notifyPartnerPayment(paidBooking);renderPaymentReceipt(`${tx.id}|profile`);toast("Предоплата подтверждена сервером. Помещение закреплено за вами.");
+        }catch(error){
+          if(error.code==="PAYMENT_HOLD_EXPIRED")await syncApiBookings().catch(()=>[]);
+          toast(error.message||"Не удалось провести предоплату. Попробуйте ещё раз.");
+          if(error.code==="PAYMENT_HOLD_EXPIRED"){closeModal();renderProfile()}
+        }finally{if(submit?.isConnected){submit.disabled=false;submit.textContent=label}}
+        return;
+      }
+      const provider=demoPaymentAdapter(booking,amount,card.slice(-4));
       if(!provider.ok)return toast("Банк отклонил операцию. Попробуйте другую карту.");
       const tx={id:`TXN-${Date.now().toString(36).toUpperCase()}`,bookingId:booking.id,roomId:booking.roomId,venue:booking.venue,room:booking.room,name:booking.name,phone:booking.phone,email,amount,status:"paid",provider:provider.provider,providerPaymentId:provider.providerPaymentId,orderId:provider.orderId,maskedCard:`•••• ${provider.last4}`,createdAt:paidAt,paidAt,receipt:{number:`RCP-${Date.now().toString(36).toUpperCase()}`,status:"demo",seller:"Rooms · прототип сервиса бронирования",buyer:email,items:[{name:`Предоплата за бронирование ${booking.room}`,quantity:1,price:amount,amount}],amount,tax:"без НДС",createdAt:paidAt}};
       savePaymentTransactions([tx,...paymentTransactions()]);

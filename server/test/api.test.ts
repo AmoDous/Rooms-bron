@@ -362,6 +362,153 @@ test("partner queue holds one conflicting booking for 15 minutes and hides the c
   await partnerApp.close();
 });
 
+test("server prepayment finalizes the hold, is idempotent and reveals contacts to the partner", async () => {
+  const partnerId = "50000000-0000-4000-8000-000000000011";
+  const partnerPassword = "rooms2026";
+  let clock = new Date();
+  const authRepository = new MemoryAuthRepository([{
+    id: partnerId,
+    role: "partner",
+    name: "Менеджер Kids Loft",
+    email: "payments@kids-loft.ru",
+    phone: null,
+    city: "Воронеж",
+    passwordHash: await hashPassword(partnerPassword),
+    passwordResetRequired: false,
+    blockedAt: null,
+  }]);
+  const venue = demoVenues.find((item) => item.id === venueIds.kidsLoft)!;
+  const bookingRepository = new MemoryBookingRepository({
+    partners: [{ userId: partnerId, venue }],
+    now: () => new Date(clock),
+  });
+  const paymentApp = buildApp({ logger: false, authRepository, bookingRepository, enableDemoPayments: true });
+  await paymentApp.ready();
+  const legal = { termsVersion: "test-1", privacyVersion: "test-1", acceptedAt: new Date().toISOString() };
+  const register = async (index: number) => {
+    const response = await paymentApp.inject({
+      method: "POST",
+      url: "/v1/auth/client/register",
+      payload: {
+        name: `Плательщик ${index}`,
+        email: `payment-client-${index}@rooms.test`,
+        phone: `+7 902 000-00-0${index}`,
+        city: "Воронеж",
+        password: `payment-client-${index}-2026`,
+        legal,
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    return response.json().accessToken as string;
+  };
+  const firstClientToken = await register(1);
+  const otherClientToken = await register(2);
+  const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const createBooking = async (time: string) => {
+    const response = await paymentApp.inject({
+      method: "POST",
+      url: "/v1/bookings",
+      headers: { authorization: `Bearer ${firstClientToken}` },
+      payload: {
+        primaryRoomId: roomIds.kosmos,
+        roomIds: [roomIds.kosmos],
+        startsAt: `${future}T${time}:00+03:00`,
+        durationMinutes: 120,
+        guests: 8,
+        eventType: "kids",
+        onSitePaymentMethod: "card",
+        legal,
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    return response.json();
+  };
+  const partnerLogin = await paymentApp.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "payments@kids-loft.ru", password: partnerPassword },
+  });
+  assert.equal(partnerLogin.statusCode, 200);
+  const partnerHeaders = { authorization: `Bearer ${partnerLogin.json().accessToken}` };
+  const booking = await createBooking("10:00");
+  const confirmed = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${booking.id}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(confirmed.statusCode, 200);
+  const intent = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${booking.id}/payment-intent`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+    payload: { amount: 1 },
+  });
+  assert.equal(intent.statusCode, 201);
+  assert.equal(intent.json().amount, 960);
+  assert.equal(intent.json().status, "pending");
+  const repeatedIntent = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${booking.id}/payment-intent`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(repeatedIntent.statusCode, 201);
+  assert.equal(repeatedIntent.json().paymentId, intent.json().paymentId);
+  const otherClientAttempt = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/payments/${intent.json().paymentId}/demo-complete`,
+    headers: { authorization: `Bearer ${otherClientToken}` },
+  });
+  assert.equal(otherClientAttempt.statusCode, 404);
+  const paid = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/payments/${intent.json().paymentId}/demo-complete`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(paid.statusCode, 200);
+  assert.equal(paid.json().payment.status, "paid");
+  assert.equal(paid.json().booking.status, "paid");
+  assert.equal(paid.json().booking.paymentHoldExpiresAt, null);
+  assert.match(paid.json().payment.maskedCard, /4242/);
+  const repeatedPayment = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/payments/${intent.json().paymentId}/demo-complete`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(repeatedPayment.statusCode, 200);
+  assert.equal(repeatedPayment.json().payment.receiptNumber, paid.json().payment.receiptNumber);
+  const partnerBooked = await paymentApp.inject({
+    method: "GET",
+    url: "/v1/partner/bookings?statusGroup=booked",
+    headers: partnerHeaders,
+  });
+  assert.equal(partnerBooked.statusCode, 200);
+  assert.equal(partnerBooked.json()[0].clientPhone, "+79020000001");
+  assert.equal(partnerBooked.json()[0].clientEmail, "payment-client-1@rooms.test");
+
+  const expiringBooking = await createBooking("14:00");
+  const expiringConfirmation = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${expiringBooking.id}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(expiringConfirmation.statusCode, 200);
+  const expiringIntent = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${expiringBooking.id}/payment-intent`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(expiringIntent.statusCode, 201);
+  clock = new Date(clock.getTime() + 16 * 60_000);
+  const expiredPayment = await paymentApp.inject({
+    method: "POST",
+    url: `/v1/payments/${expiringIntent.json().paymentId}/demo-complete`,
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(expiredPayment.statusCode, 409);
+  assert.equal(expiredPayment.json().code, "PAYMENT_HOLD_EXPIRED");
+  await paymentApp.close();
+});
+
 test("city stats expose exact supply and bucket the public audience", async () => {
   const launching = await app.inject({ method: "GET", url: "/v1/cities/воронеж/stats" });
   assert.equal(launching.statusCode, 200);
