@@ -362,6 +362,166 @@ test("partner queue holds one conflicting booking for 15 minutes and hides the c
   await partnerApp.close();
 });
 
+test("booking conversation persists messages and lets the client accept a partner time proposal", async () => {
+  const partnerId = "50000000-0000-4000-8000-000000000031";
+  const partnerPassword = "rooms2026";
+  const authRepository = new MemoryAuthRepository([{
+    id: partnerId,
+    role: "partner",
+    name: "Менеджер согласований",
+    email: "conversation@kids-loft.ru",
+    phone: null,
+    city: "Воронеж",
+    passwordHash: await hashPassword(partnerPassword),
+    passwordResetRequired: false,
+    blockedAt: null,
+  }]);
+  const venue = demoVenues.find((item) => item.id === venueIds.kidsLoft)!;
+  const bookingRepository = new MemoryBookingRepository({ partners: [{ userId: partnerId, venue }] });
+  const conversationApp = buildApp({ logger: false, authRepository, bookingRepository });
+  await conversationApp.ready();
+  const legal = { termsVersion: "test-1", privacyVersion: "test-1", acceptedAt: new Date().toISOString() };
+  const future = new Date(Date.now() + 11 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const clientRegistration = await conversationApp.inject({
+    method: "POST",
+    url: "/v1/auth/client/register",
+    payload: {
+      name: "Клиент согласования",
+      email: "conversation-client@rooms.test",
+      phone: "+7 904 000-00-01",
+      city: "Воронеж",
+      password: "conversation-client-2026",
+      legal,
+    },
+  });
+  assert.equal(clientRegistration.statusCode, 201);
+  const clientToken = clientRegistration.json().accessToken as string;
+  const clientHeaders = { authorization: `Bearer ${clientToken}` };
+  const created = await conversationApp.inject({
+    method: "POST",
+    url: "/v1/bookings",
+    headers: clientHeaders,
+    payload: {
+      primaryRoomId: roomIds.kosmos,
+      roomIds: [roomIds.kosmos],
+      startsAt: `${future}T10:00:00+03:00`,
+      durationMinutes: 120,
+      guests: 6,
+      eventType: "kids",
+      onSitePaymentMethod: "card",
+      legal,
+    },
+  });
+  assert.equal(created.statusCode, 201);
+  const bookingId = created.json().id as string;
+  const partnerLogin = await conversationApp.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "conversation@kids-loft.ru", password: partnerPassword },
+  });
+  assert.equal(partnerLogin.statusCode, 200);
+  const partnerHeaders = { authorization: `Bearer ${partnerLogin.json().accessToken}` };
+
+  const unavailableProposal = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${bookingId}/proposal`,
+    headers: partnerHeaders,
+    payload: { startsAt: `${future}T18:00:00+03:00`, durationMinutes: 120, comment: "Проверка занятого окна" },
+  });
+  assert.equal(unavailableProposal.statusCode, 409);
+  assert.equal(unavailableProposal.json().code, "SLOT_UNAVAILABLE");
+
+  const proposed = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${bookingId}/proposal`,
+    headers: partnerHeaders,
+    payload: { startsAt: `${future}T14:00:00+03:00`, durationMinutes: 180, comment: "Можем принять вас после обеда." },
+  });
+  assert.equal(proposed.statusCode, 200);
+  assert.equal(proposed.json().status, "proposed");
+  assert.equal(proposed.json().proposal.durationMinutes, 180);
+  assert.equal(proposed.json().proposal.money.total, 4800);
+  assert.equal(proposed.json().proposal.money.prepayment, 1440);
+  const proposalId = proposed.json().proposal.id as string;
+
+  const directConfirmation = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${bookingId}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(directConfirmation.statusCode, 409);
+  assert.equal(directConfirmation.json().code, "BOOKING_STATE_CHANGED");
+
+  const clientMessage = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${bookingId}/messages`,
+    headers: clientHeaders,
+    payload: { body: "Подскажите, стол для торта останется доступен?" },
+  });
+  assert.equal(clientMessage.statusCode, 201);
+  assert.deepEqual(clientMessage.json().readBy, ["client"]);
+  const partnerQueue = await conversationApp.inject({
+    method: "GET",
+    url: "/v1/partner/bookings?statusGroup=new",
+    headers: partnerHeaders,
+  });
+  assert.equal(partnerQueue.json()[0].unreadMessages, 1);
+  const partnerMessages = await conversationApp.inject({
+    method: "GET",
+    url: `/v1/bookings/${bookingId}/messages`,
+    headers: partnerHeaders,
+  });
+  assert.equal(partnerMessages.statusCode, 200);
+  assert.deepEqual(partnerMessages.json()[0].readBy.sort(), ["client", "partner"]);
+
+  const blockedContact = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${bookingId}/messages`,
+    headers: clientHeaders,
+    payload: { body: "Позвоните мне: +7 904 000-00-01" },
+  });
+  assert.equal(blockedContact.statusCode, 422);
+  assert.equal(blockedContact.json().code, "CONTACT_DETAILS_BLOCKED");
+  const partnerReply = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${bookingId}/messages`,
+    headers: partnerHeaders,
+    payload: { body: "Да, стол и выбранные услуги сохраняются." },
+  });
+  assert.equal(partnerReply.statusCode, 201);
+  const clientList = await conversationApp.inject({
+    method: "GET",
+    url: "/v1/bookings?statusGroup=active",
+    headers: clientHeaders,
+  });
+  assert.equal(clientList.statusCode, 200);
+  assert.equal(clientList.json()[0].unreadMessages, 1);
+  assert.equal(clientList.json()[0].proposal.id, proposalId);
+
+  const accepted = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${bookingId}/proposal/accept`,
+    headers: clientHeaders,
+    payload: { proposalId },
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.json().status, "awaiting_payment");
+  assert.equal(accepted.json().startsAt, new Date(`${future}T14:00:00+03:00`).toISOString());
+  assert.equal(accepted.json().money.total, 4800);
+  assert.equal(accepted.json().money.remainingOnSite, 3360);
+  assert.equal(accepted.json().proposal, null);
+  assert.ok(new Date(accepted.json().paymentHoldExpiresAt).getTime() > Date.now());
+  const staleAcceptance = await conversationApp.inject({
+    method: "POST",
+    url: `/v1/bookings/${bookingId}/proposal/accept`,
+    headers: clientHeaders,
+    payload: { proposalId },
+  });
+  assert.equal(staleAcceptance.statusCode, 409);
+  assert.equal(staleAcceptance.json().code, "PROPOSAL_STALE");
+  await conversationApp.close();
+});
+
 test("server prepayment finalizes the hold, is idempotent and reveals contacts to the partner", async () => {
   const partnerId = "50000000-0000-4000-8000-000000000011";
   const partnerPassword = "rooms2026";

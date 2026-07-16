@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Draft contract for the Rooms MVP backend. The current GitHub Pages build is
     still a frontend prototype and does not serve these endpoints.
@@ -418,6 +418,74 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/bookings/{bookingId}/proposal/accept:
+    post:
+      tags: [Client]
+      operationId: acceptBookingTimeProposal
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId]
+              properties:
+                proposalId: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Proposal accepted and all booking rooms held for 15 minutes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Proposal changed or its slot is no longer available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/bookings/{bookingId}/proposal/decline:
+    post:
+      tags: [Client]
+      operationId: declineBookingTimeProposal
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId]
+              properties:
+                proposalId: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Proposal declined and request returned to the partner queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Proposal has already changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v1/bookings/{bookingId}/payment-intent:
     post:
       tags: [Payments]
@@ -767,6 +835,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Booking'
+        '409':
+          description: Booking state changed or the proposed slot is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /v1/admin/notification-deliveries:
     get:
@@ -1139,7 +1213,7 @@ components:
 
     Booking:
       type: object
-      required: [id, publicNumber, status, venue, rooms, startsAt, endsAt, guests, money]
+      required: [id, publicNumber, status, venue, rooms, startsAt, endsAt, guests, money, proposal, unreadMessages]
       properties:
         id: {type: string, format: uuid}
         publicNumber: {type: string}
@@ -1160,17 +1234,40 @@ components:
         cancelledBy: {type: [string, 'null'], enum: [client, partner, admin, null]}
         services: {type: array, items: {$ref: '#/components/schemas/BookingService'}}
         money: {$ref: '#/components/schemas/MoneyBreakdown'}
+        proposal:
+          anyOf:
+            - $ref: '#/components/schemas/BookingTimeProposal'
+            - type: 'null'
+        unreadMessages: {type: integer, minimum: 0}
         paymentHoldExpiresAt: {type: [string, 'null'], format: date-time}
         createdAt: {type: string, format: date-time}
 
     BookingMessage:
       type: object
-      required: [id, senderRole, body, createdAt]
+      required: [id, senderRole, body, createdAt, readBy]
       properties:
         id: {type: string, format: uuid}
         senderRole: {type: string, enum: [client, partner, admin]}
         body: {type: string}
         createdAt: {type: string, format: date-time}
+        readBy:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [client, partner]}
+
+    BookingTimeProposal:
+      type: object
+      required: [id, startsAt, endsAt, durationMinutes, comment, status, money, createdAt, respondedAt]
+      properties:
+        id: {type: string, format: uuid}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: string, format: date-time}
+        durationMinutes: {type: integer, minimum: 30, multipleOf: 30}
+        comment: {type: string}
+        status: {type: string, enum: [pending, accepted, declined, superseded]}
+        money: {$ref: '#/components/schemas/MoneyBreakdown'}
+        createdAt: {type: string, format: date-time}
+        respondedAt: {type: [string, 'null'], format: date-time}
 
     PartnerReservationWrite:
       type: object

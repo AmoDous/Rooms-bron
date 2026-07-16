@@ -137,6 +137,20 @@ interface PartnerBookingRejectBody {
   reason: string;
 }
 
+interface PartnerBookingProposalBody {
+  startsAt: string;
+  durationMinutes: number;
+  comment?: string;
+}
+
+interface BookingProposalActionBody {
+  proposalId: string;
+}
+
+interface BookingMessageBody {
+  body: string;
+}
+
 interface PartnerReservationBody {
   roomId: string;
   type: PartnerReservationType;
@@ -288,6 +302,17 @@ function relativeMoscowHour(value: Date, baseDate: string): number {
   return dayOffset * 24 + (hours ?? 0) + (minutes ?? 0) / 60;
 }
 
+function blockedChatContact(text: string): string | null {
+  const lower = text.toLocaleLowerCase("ru-RU");
+  if (/[a-zа-я0-9._%+-]+@[a-zа-я0-9.-]+\.[a-zа-я]{2,}/iu.test(text)) return "email";
+  if (/(?:https?:\/\/|www\.|t\.me\/|wa\.me\/|[a-zа-я0-9-]+\.(?:ru|рф|com|net|org)\b)/iu.test(text)) return "ссылку";
+  if (/(^|\s)@[a-zа-я0-9_]{3,}/iu.test(text) || /(telegram|телеграм|whatsapp|ватсап|viber|вайбер|instagram|инстаграм|вконтакте|\bvk\b)/iu.test(lower)) {
+    return "контакт мессенджера";
+  }
+  const phoneLike = text.match(/\+?\d[\d\s()\-]{7,}\d/g) ?? [];
+  return phoneLike.some((value) => (value.match(/\d/g) ?? []).length >= 10) ? "номер телефона" : null;
+}
+
 function photoUrl(baseUrl: string, path: string): string {
   const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return new URL(path.replace(/^\//, ""), base).toString();
@@ -384,6 +409,56 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       ...room,
       blockedByDate: { ...room.blockedByDate, [date]: [...(room.blockedByDate[date] ?? []), ...(blocks[room.id] ?? [])] },
     }));
+  };
+
+  const validateBookingProposal = async (partnerId: string, bookingId: string, body: PartnerBookingProposalBody) => {
+    const booking = await config.bookingRepository.findByPartner(partnerId, bookingId);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    if (!["pending", "proposed"].includes(booking.status)) {
+      throw new ApiError(409, "BOOKING_STATE_CHANGED", "Для этой заявки уже нельзя предложить другое время.");
+    }
+    const startsAt = new Date(body.startsAt);
+    if (!Number.isFinite(startsAt.getTime())) throw new ApiError(400, "INVALID_START", "Проверьте дату и время начала.");
+    if (startsAt.getTime() < Date.now()) throw new ApiError(400, "START_IN_PAST", "Нельзя предложить прошедшее время.");
+    const localStart = moscowDateTime(startsAt);
+    const found = await Promise.all(booking.rooms.map((room) => config.repository.findRoom(room.id, localStart.date)));
+    if (found.some((room) => room === null)) throw new ApiError(404, "ROOM_NOT_FOUND", "Одно из помещений заявки больше недоступно.");
+    const selectedRooms = await withReservationBlocks(found as Room[], localStart.date);
+    if (selectedRooms.some((room) => room.venueId !== booking.venue.id)) {
+      throw new ApiError(409, "BOOKING_ROOMS_CHANGED", "Состав помещений изменился. Обновите заявку.");
+    }
+    if (body.durationMinutes < Math.max(...selectedRooms.map((room) => room.minimumHours * 60))) {
+      throw new ApiError(400, "MINIMUM_DURATION", "Предложенная длительность меньше минимальной для одного из помещений.");
+    }
+    const windows = intersectAvailability(
+      selectedRooms.map((room) => availabilityForRoom(room, localStart.date, body.durationMinutes, localStart.time)),
+      body.durationMinutes,
+      localStart.time,
+    );
+    if (!windows.some((window) => new Date(window.startsAt).getTime() === startsAt.getTime())) {
+      throw new ApiError(409, "SLOT_UNAVAILABLE", "Это время уже недоступно. Выберите другое окно.", windows.slice(0, 6));
+    }
+    const hours = body.durationMinutes / 60;
+    const roomTotal = moneyAmount(booking.rooms.reduce((sum, room) => sum + room.pricePerHour * hours, 0));
+    const serviceTotal = booking.money.serviceTotal;
+    const total = moneyAmount(roomTotal + serviceTotal);
+    const prepayment = Math.ceil(total * 0.3);
+    const commission = Math.ceil(total * 0.15);
+    return {
+      startsAt: startsAt.toISOString(),
+      endsAt: new Date(startsAt.getTime() + body.durationMinutes * 60_000).toISOString(),
+      comment: body.comment?.trim() || "Площадка предложила другое свободное окно.",
+      money: {
+        roomTotal,
+        serviceTotal,
+        total,
+        prepayment,
+        remainingOnSite: moneyAmount(total - prepayment),
+        currency: "RUB" as const,
+      },
+      commission,
+      partnerAmount: moneyAmount(total - commission),
+    };
   };
 
   const validatePartnerReservation = async (partnerId: string, body: PartnerReservationBody): Promise<PartnerReservationInput> => {
@@ -637,6 +712,104 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const current = await auth.authenticate(request.headers.authorization);
     if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
     return config.bookingRepository.listByClient(current.user.id, request.query.statusGroup ?? "all");
+  });
+
+  app.get<{ Params: BookingParams }>("/v1/bookings/:bookingId/messages", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || (current.user.role !== "client" && current.user.role !== "partner")) {
+      throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет участника заявки.");
+    }
+    const messages = await config.bookingRepository.listMessages(current.user.id, current.user.role, request.params.bookingId);
+    if (!messages) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена или недоступна этому кабинету.");
+    return messages;
+  });
+
+  app.post<{ Params: BookingParams; Body: BookingMessageBody }>("/v1/bookings/:bookingId/messages", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["body"],
+        properties: { body: { type: "string", minLength: 1, maxLength: 1000 } },
+      },
+    },
+  }, async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || (current.user.role !== "client" && current.user.role !== "partner")) {
+      throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет участника заявки.");
+    }
+    const booking = current.user.role === "client"
+      ? await config.bookingRepository.findByClient(current.user.id, request.params.bookingId)
+      : await config.bookingRepository.findByPartner(current.user.id, request.params.bookingId);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена или недоступна этому кабинету.");
+    const body = request.body.body.trim();
+    if (!body) throw new ApiError(400, "MESSAGE_REQUIRED", "Введите сообщение.");
+    const blocked = booking.status !== "paid" ? blockedChatContact(body) : null;
+    if (blocked) throw new ApiError(422, "CONTACT_DETAILS_BLOCKED", `До предоплаты нельзя передавать ${blocked}.`);
+    const message = await config.bookingRepository.addMessage(current.user.id, current.user.role, request.params.bookingId, body);
+    if (!message) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена или недоступна этому кабинету.");
+    return reply.code(201).send(message);
+  });
+
+  app.post<{ Params: BookingParams; Body: BookingProposalActionBody }>("/v1/bookings/:bookingId/proposal/accept", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["proposalId"],
+        properties: { proposalId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    const booking = await config.bookingRepository.acceptProposalByClient(current.user.id, request.params.bookingId, request.body.proposalId);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в личном кабинете.");
+    return booking;
+  });
+
+  app.post<{ Params: BookingParams; Body: BookingProposalActionBody }>("/v1/bookings/:bookingId/proposal/decline", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["proposalId"],
+        properties: { proposalId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    const booking = await config.bookingRepository.declineProposalByClient(current.user.id, request.params.bookingId, request.body.proposalId);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в личном кабинете.");
+    return booking;
   });
 
   app.post<{ Body: BookingCreateBody }>("/v1/bookings", {
@@ -910,6 +1083,34 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const current = await auth.authenticate(request.headers.authorization);
     if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
     return config.bookingRepository.listByPartner(current.user.id, request.query.statusGroup ?? "all");
+  });
+
+  app.post<{ Params: BookingParams; Body: PartnerBookingProposalBody }>("/v1/partner/bookings/:bookingId/proposal", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["startsAt", "durationMinutes"],
+        properties: {
+          startsAt: { type: "string", minLength: 20, maxLength: 40 },
+          durationMinutes: { type: "integer", minimum: 30, maximum: 1440, multipleOf: 30 },
+          comment: { type: "string", maxLength: 1000 },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    const input = await validateBookingProposal(current.user.id, request.params.bookingId, request.body);
+    const booking = await config.bookingRepository.proposeTimeByPartner(current.user.id, request.params.bookingId, input);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    return booking;
   });
 
   app.post<{ Params: BookingParams }>("/v1/partner/bookings/:bookingId/confirm", {

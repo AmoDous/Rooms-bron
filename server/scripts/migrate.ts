@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { postgresPoolConfig } from "../src/storage.js";
 
-const migrationName = "0001_initial";
-const schemaPath = fileURLToPath(new URL("../../docs/database.sql", import.meta.url));
-const schema = await readFile(schemaPath, "utf8");
-const checksum = createHash("sha256").update(schema).digest("hex");
+const migrations = [
+  { name: "0001_initial", url: new URL("../../docs/database.sql", import.meta.url) },
+  { name: "0002_booking_conversations", url: new URL("../../docs/migrations/0002_booking_conversations.sql", import.meta.url) },
+];
 const pool = new Pool({ ...postgresPoolConfig(), max: 1, application_name: "rooms-migrate" });
 const client = await pool.connect();
 
@@ -20,18 +20,23 @@ try {
       applied_at timestamptz not null default now()
     )
   `);
-  const existing = await client.query<{ checksum: string }>("select checksum from schema_migrations where name = $1", [migrationName]);
-  if (existing.rows[0]) {
-    if (existing.rows[0].checksum !== checksum) {
-      throw new Error(`Migration ${migrationName} was already applied with a different checksum.`);
+  for (const migration of migrations) {
+    const schemaPath = fileURLToPath(migration.url);
+    const schema = await readFile(schemaPath, "utf8");
+    const checksum = createHash("sha256").update(schema).digest("hex");
+    const existing = await client.query<{ checksum: string }>("select checksum from schema_migrations where name = $1", [migration.name]);
+    if (existing.rows[0]) {
+      if (existing.rows[0].checksum !== checksum) {
+        throw new Error(`Migration ${migration.name} was already applied with a different checksum.`);
+      }
+      console.log(`Migration ${migration.name} is already applied.`);
+      continue;
     }
-    console.log(`Migration ${migrationName} is already applied.`);
-  } else {
     await client.query("begin");
     await client.query(schema);
-    await client.query("insert into schema_migrations(name, checksum) values ($1, $2)", [migrationName, checksum]);
+    await client.query("insert into schema_migrations(name, checksum) values ($1, $2)", [migration.name, checksum]);
     await client.query("commit");
-    console.log(`Applied migration ${migrationName}.`);
+    console.log(`Applied migration ${migration.name}.`);
   }
 } catch (error) {
   await client.query("rollback").catch(() => undefined);

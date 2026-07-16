@@ -1119,7 +1119,8 @@
     function localBookingFromApi(item){
       const primary=item.rooms.find(room=>room.isPrimary)||item.rooms[0],primaryLocal=rooms.find(room=>room.apiId===primary?.id||room.id===primary?.slug),start=apiBookingDateTime(item.startsAt),hours=Math.max(.5,(new Date(item.endsAt)-new Date(item.startsAt))/3600000);
       const extras=item.rooms.filter(room=>room!==primary).map(room=>{const local=rooms.find(item=>item.apiId===room.id||item.id===room.slug);return {id:local?.id||room.slug||room.id,title:room.title,price:Number(room.pricePerHour)||0,capacity:Number(room.capacityMax)||1}});
-      return {id:item.id,publicNumber:item.publicNumber,roomId:primaryLocal?.id||primary?.slug||primary?.id,room:primary?.title||"Помещение",roomPrice:Number(primary?.pricePerHour)||0,extraRooms:extras,venue:item.venue.title,city:item.venue.city,date:start.date,time:start.time,hours,guests:Number(item.guests)||1,name:item.clientName,phone:phone(item.clientPhone),eventType:item.eventType||"",eventName:item.eventName||"",paymentMethod:item.onSitePaymentMethod||"card",comment:item.comment||"",services:(item.services||[]).map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})),total:Number(item.money?.total)||0,prepay:Number(item.money?.prepayment)||0,policy:bookingPolicySnapshot(Number(item.money?.prepayment)||0),status:item.status,paymentDueAt:item.paymentHoldExpiresAt||"",cancelReason:item.cancellationReason||"",cancelledBy:item.cancelledBy||"",created:item.createdAt,server:true,history:[historyEntry("created","Заявка создана",`${start.date} в ${start.time} · ${hours} ч · ${item.guests} гостей`,"client")]};
+      const proposalStart=item.proposal?apiBookingDateTime(item.proposal.startsAt):null,proposal=item.proposal&&proposalStart?{id:item.proposal.id,date:proposalStart.date,time:proposalStart.time,hours:Number(item.proposal.durationMinutes)/60,total:Number(item.proposal.money?.total)||0,prepay:Number(item.proposal.money?.prepayment)||0,comment:item.proposal.comment||"",created:item.proposal.createdAt}:null;
+      return {id:item.id,publicNumber:item.publicNumber,roomId:primaryLocal?.id||primary?.slug||primary?.id,room:primary?.title||"Помещение",roomPrice:Number(primary?.pricePerHour)||0,extraRooms:extras,venue:item.venue.title,city:item.venue.city,date:start.date,time:start.time,hours,guests:Number(item.guests)||1,name:item.clientName,phone:phone(item.clientPhone),eventType:item.eventType||"",eventName:item.eventName||"",paymentMethod:item.onSitePaymentMethod||"card",comment:item.comment||"",services:(item.services||[]).map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})),total:Number(item.money?.total)||0,prepay:Number(item.money?.prepayment)||0,policy:bookingPolicySnapshot(Number(item.money?.prepayment)||0),status:item.status,proposal,unreadMessages:Number(item.unreadMessages)||0,paymentDueAt:item.paymentHoldExpiresAt||"",cancelReason:item.cancellationReason||"",cancelledBy:item.cancelledBy||"",created:item.createdAt,server:true,history:[historyEntry("created","Заявка создана",`${start.date} в ${start.time} · ${hours} ч · ${item.guests} гостей`,"client")]};
     }
     function mergeApiBookings(items){
       const mapped=(items||[]).map(localBookingFromApi),ids=new Set(mapped.map(item=>item.id)),legacy=read(store.bookings,[]).filter(item=>!item.server&&!ids.has(item.id));write(store.bookings,[...mapped,...legacy].slice(0,100));return mapped;
@@ -2082,10 +2083,12 @@
     function chatThreads(){return read(store.chat,{})||{}}
     function bookingChat(id){const item=chatThreads()[id]||{};return {bookingId:id,messages:Array.isArray(item.messages)?item.messages:[]}}
     function saveBookingChat(thread){const all=chatThreads();all[thread.bookingId]=thread;write(store.chat,all)}
+    function mergeApiBookingChat(bookingId,messages){const thread={bookingId,messages:(messages||[]).map(item=>({id:item.id,actor:item.senderRole,text:item.body,created:item.createdAt,readBy:Array.isArray(item.readBy)?item.readBy:[]}))};saveBookingChat(thread);return thread}
     function chatActorForArea(area){return area==="profile"?"client":area}
     function chatActorLabel(actor){return ({client:"Клиент",partner:"Площадка",admin:"Rooms",system:"Rooms"})[actor]||"Rooms"}
     function chatUnreadCount(bookingId,area){
       const actor=chatActorForArea(area);if(actor==="admin")return 0;
+      const booking=adminBookings().find(item=>item.id===bookingId);if(booking?.server)return Number(booking.unreadMessages)||0;
       return bookingChat(bookingId).messages.filter(x=>x.actor!==actor&&!(x.readBy||[]).includes(actor)).length;
     }
     function markChatRead(bookingId,area){
@@ -2114,12 +2117,18 @@
       const unread=chatUnreadCount(b.id,area),label=area==="admin"?"Открыть чат":"Чат с "+(area==="profile"?"площадкой":"клиентом");
       return `<button class="btn ${unread?"soft":""}" data-booking-chat="${b.id}|${area}" type="button">${label}${unread?` · ${unread}`:""}</button>`;
     }
-    function renderBookingChat(payload){
+    async function renderBookingChat(payload){
       const [id,area="profile"]=String(payload||"").split("|"),b=adminBookings().find(x=>x.id===id),actor=chatActorForArea(area),acc=current();
       if(!b)return toast("Заявка для чата не найдена.");
       if(area==="profile"&&(!acc||isAdmin(acc)||phone(acc.phone)!==phone(b.phone)))return renderAuth();
       if(area==="partner"&&(!currentPartnerAccount()||!partnerRoomIds().some(roomId=>bookingContainsRoom(b,roomId))))return renderPartnerLogin();
       if(area==="admin"&&!isAdmin(acc))return toast("Чат доступен администратору Rooms.");
+      if(b.server&&apiState.connected&&apiState.accessToken&&(actor==="client"||actor==="partner")){
+        try{
+          mergeApiBookingChat(id,await apiRequest(`/v1/bookings/${encodeURIComponent(id)}/messages`,{auth:true}));
+          write(store.bookings,read(store.bookings,[]).map(item=>item.id===id?{...item,unreadMessages:0}:item));
+        }catch(error){toast(error.message||"Не удалось обновить переписку.")}
+      }
       markChatRead(id,area);markChatNoticesRead(id,area);
       const thread=bookingChat(id),paid=hasPaymentRecord(b),closed=chatClosed(b),messages=thread.messages.map(x=>`<div class="chat-message ${esc(x.actor)}"><strong>${x.actor===actor?"Вы":chatActorLabel(x.actor)}</strong><span>${esc(x.text).replace(/\n/g,"<br>")}</span><time>${new Date(x.created).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></div>`).join("");
       const back=area==="profile"?"В мои заявки":area==="partner"?"В кабинет партнёра":"В админку",guard=paid?"Предоплата внесена. Контакт клиента уже открыт площадке в заявке.":"До предоплаты Rooms блокирует телефоны, email, ссылки и контакты мессенджеров. Обсуждайте здесь детали события и условия площадки.";
@@ -2128,12 +2137,22 @@
       openModal(`<div class="chat-head"><div><span class="kicker">${esc(b.venue)} · ${esc(b.room)}</span><h2 style="margin:4px 0 6px">Чат по заявке ${esc(b.id)}</h2><p class="muted" style="margin:0">${esc(b.date)} в ${esc(b.time)} · ${b.hours} ч · ${b.guests} гостей</p></div><button class="btn" data-chat-back="${esc(area)}" type="button">${back}</button></div><div class="chat-guard ${paid?"open":""}">${guard}</div><div class="chat-thread" data-chat-thread>${messages||`<div class="chat-message system"><span>Сообщений пока нет. Начните с деталей события или вопроса площадке.</span></div>`}</div>${quick}${compose}`,false);
       requestAnimationFrame(()=>{const box=document.querySelector("[data-chat-thread]");if(box)box.scrollTop=box.scrollHeight});
     }
-    function submitBookingChat(form){
+    async function submitBookingChat(form){
       const id=form.dataset.booking,area=form.dataset.area||"profile",actor=chatActorForArea(area),b=adminBookings().find(x=>x.id===id),text=String(new FormData(form).get("message")||"").trim(),error=form.querySelector("[data-chat-error]");
       if(!b)return toast("Заявка для чата не найдена.");
       if(text.length<1)return;
       const blocked=!hasPaymentRecord(b)?blockedChatContact(text):"";
       if(blocked){if(error)error.textContent=`Сообщение не отправлено: до предоплаты нельзя передавать ${blocked}.`;return toast("Контакты откроются после предоплаты.")}
+      if(b.server&&apiState.connected&&apiState.accessToken&&(actor==="client"||actor==="partner")){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const item=await apiRequest(`/v1/bookings/${encodeURIComponent(id)}/messages`,{method:"POST",auth:true,body:{body:text}}),thread=bookingChat(id);
+          thread.messages=[...thread.messages.filter(message=>message.id!==item.id),{id:item.id,actor:item.senderRole,text:item.body,created:item.createdAt,readBy:item.readBy||[actor]}];saveBookingChat(thread);
+          if(actor==="partner")await syncPartnerApiBookings();else await syncApiBookings();
+          renderBookingChat(`${id}|${area}`);
+        }catch(requestError){if(error)error.textContent=requestError.message||"Не удалось отправить сообщение.";toast(requestError.code==="CONTACT_DETAILS_BLOCKED"?"Контакты откроются после предоплаты.":"Сообщение не отправлено.");if(submit)submit.disabled=false}
+        return;
+      }
       const thread=bookingChat(id),created=new Date().toISOString();thread.messages.push({id:`CHAT-${Date.now().toString(36)}`,actor,text,created,readBy:[actor]});saveBookingChat(thread);
       logActivity("booking_chat","Новое сообщение в чате",`${b.id} · ${chatActorLabel(actor)} · ${b.room}`,actor);
       if(actor==="client")notifyPartnerChat(b,text);else if(actor==="partner")notifyUserChat(b,text);
@@ -3228,7 +3247,7 @@
         const text=status==="pending"?"Площадка проверяет доступность и подтвердит заявку.":status==="paid"?"Предоплата внесена. После посещения можно будет оставить отзыв.":status==="expired"?"Время на предоплату истекло. Слот снова доступен в каталоге.":status==="visited"||status==="completed"?"Посещение состоялось. Теперь можно оставить отзыв в карточке помещения.":"Заявка отменена.";
         return `<p class="muted" style="margin:10px 0 0">${text}</p>`;
       }
-      const actor=area==="partner"?"partner":"admin",cancelLabel=area==="partner"?"Отклонить":"Отменить",proposalButton=area==="partner"&&b.server?"":`<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Предложить время</button>`;
+      const actor=area==="partner"?"partner":"admin",cancelLabel=area==="partner"?"Отклонить":"Отменить",proposalButton=`<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Предложить время</button>`;
       if(status==="pending")return `<button class="btn primary" data-booking-status="${b.id}|awaiting_payment" ${after} type="button">Подтвердить и отправить на оплату</button>${proposalButton}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">${cancelLabel}</button>`;
       if(status==="proposed")return `<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Изменить предложение</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">${cancelLabel}</button>`;
       if(status==="awaiting_payment")return `<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button>`;
@@ -3790,7 +3809,7 @@
       else{adminBookingFilter=updated?partnerBookingGroup(updated):"new";renderAdminDashboard(true)}
       toast(`Статус заявки: ${statusLabel(status)}.`);
     }
-    function submitProposal(form){
+    async function submitProposal(form){
       const id=form.dataset.booking,after=form.dataset.after||"partner",fd=new FormData(form);
       let list=read(store.bookings,[]);if(!list.length)list=demoBookings();
       const b=list.find(x=>x.id===id),r=rooms.find(x=>x.id===b?.roomId);
@@ -3798,22 +3817,40 @@
       const date=fd.get("date"),time=fd.get("time"),hours=Number(fd.get("hours")),available=combinedBookingCapacity(r,b.extraRooms||[],date,time),required=Math.max(r.min,...extraRoomRefs(b.extraRooms||[]).map(room=>room.min));
       if(!time||!hours||available<hours||available<required){updateProposalForm(form);return toast("Для всех выбранных помещений это окно уже недоступно. Выберите другое время.")}
       const total=r.price*hours+extraRoomsCost(b.extraRooms||[],hours)+servicesTotal(b.services||[]),proposal={date,time,hours,total,prepay:Math.ceil(total*.3),comment:String(fd.get("comment")||"").trim()||"Площадка предложила другое свободное окно.",created:new Date().toISOString()};
+      if(after==="partner"&&currentPartnerAccount()?.api&&b.server&&apiState.connected&&apiState.accessToken){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          await apiRequest(`/v1/partner/bookings/${encodeURIComponent(id)}/proposal`,{method:"POST",auth:true,body:{startsAt:apiDateTimeFromHour(String(date),hour(String(time))),durationMinutes:Math.round(hours*60),comment:proposal.comment}});
+          await syncPartnerApiBookings();hydrate();partnerBookingFilter="new";renderPartnerCabinet(true);toast("Предложение отправлено клиенту.");
+        }catch(error){toast(error.message||"Не удалось отправить предложение.");await syncPartnerApiBookings().catch(()=>null);renderPartnerCabinet(true);if(submit)submit.disabled=false}
+        return;
+      }
       list=list.map(x=>x.id===id?appendBookingHistory({...x,status:"proposed",proposal,paymentStatus:"",paymentDueAt:""},"proposal","Площадка предложила другое время",`${proposal.date} в ${proposal.time} на ${proposal.hours} ч`,after):x);
       const updated=list.find(x=>x.id===id);
       saveAdminBookings(list);logActivity("booking_proposal","Площадка предложила другое время",`${updated.id} · ${proposal.date} ${proposal.time} · ${proposal.hours} ч`,after);hydrate();notifyUserBooking(updated,"proposed");
       if(after==="partner"){partnerBookingFilter=updated?partnerBookingGroup(updated):"new";renderPartnerCabinet(true)}else{adminBookingFilter=updated?partnerBookingGroup(updated):"new";renderAdminDashboard(true)}
       toast("Предложение отправлено клиенту.");
     }
-    function acceptProposal(id){
+    async function acceptProposal(id){
       let list=read(store.bookings,[]);const b=list.find(x=>x.id===id),r=rooms.find(x=>x.id===b?.roomId),p=b?.proposal;
       if(!b||!r||!p)return toast("Предложение не найдено.");
+      if(b.server&&current()?.api&&apiState.connected&&apiState.accessToken){
+        try{await apiRequest(`/v1/bookings/${encodeURIComponent(id)}/proposal/accept`,{method:"POST",auth:true,body:{proposalId:p.id}});await syncApiBookings();hydrate();markCurrentUserNoticesRead();renderProfile();toast("Время принято. Теперь можно внести предоплату.")}
+        catch(error){toast(error.message||"Не удалось принять новое время.");await syncApiBookings().catch(()=>null);renderProfile(true)}
+        return;
+      }
       if(combinedBookingCapacity(r,b.extraRooms||[],p.date,p.time)<Number(p.hours)){return toast("Одно из выбранных помещений уже занято. Площадка предложит другое время.")}
       const fallbackTotal=r.price*Number(p.hours)+extraRoomsCost(b.extraRooms||[],Number(p.hours))+servicesTotal(b.services||[]),fallbackPrepay=Math.ceil(fallbackTotal*.3);
       list=list.map(x=>x.id===id?appendBookingHistory({...x,date:p.date,time:p.time,hours:Number(p.hours),total:p.total||fallbackTotal,prepay:p.prepay||fallbackPrepay,policy:bookingPolicySnapshot(p.prepay||fallbackPrepay),status:"awaiting_payment",paymentStatus:"pending",paymentDueAt:new Date(Date.now()+15*60*1000).toISOString(),proposal:null,proposalAcceptedAt:new Date().toISOString()},"proposal_accept","Клиент принял предложенное время",`${p.date} в ${p.time} на ${p.hours} ч`,"client"):x);
       saveAdminBookings(list);logActivity("proposal_accept","Клиент принял новое время",`${b.id} · ${p.date} ${p.time} · ${p.hours} ч`,"client");hydrate();markCurrentUserNoticesRead();renderProfile();toast("Время принято. Теперь можно внести предоплату.");
     }
-    function declineProposal(id){
-      let list=read(store.bookings,[]);if(!list.find(x=>x.id===id))return toast("Предложение не найдено.");
+    async function declineProposal(id){
+      let list=read(store.bookings,[]),booking=list.find(x=>x.id===id);if(!booking?.proposal)return toast("Предложение не найдено.");
+      if(booking.server&&current()?.api&&apiState.connected&&apiState.accessToken){
+        try{await apiRequest(`/v1/bookings/${encodeURIComponent(id)}/proposal/decline`,{method:"POST",auth:true,body:{proposalId:booking.proposal.id}});await syncApiBookings();hydrate();markCurrentUserNoticesRead();renderProfile();toast("Предложение отклонено. Заявка вернулась в новые.")}
+        catch(error){toast(error.message||"Не удалось отклонить предложение.");await syncApiBookings().catch(()=>null);renderProfile(true)}
+        return;
+      }
       list=list.map(x=>x.id===id?appendBookingHistory({...x,status:"pending",proposal:null,proposalDeclinedAt:new Date().toISOString()},"proposal_decline","Клиент отклонил предложенное время","Заявка вернулась в новые.","client"):x);
       saveAdminBookings(list);logActivity("proposal_decline","Клиент отклонил предложенное время",id,"client");hydrate();markCurrentUserNoticesRead();renderProfile();toast("Предложение отклонено. Заявка вернулась в новые.");
     }
