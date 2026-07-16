@@ -529,6 +529,28 @@ paths:
         '409':
           $ref: '#/components/responses/SlotConflict'
 
+  /v1/partner/bookings:
+    get:
+      tags: [Partner]
+      operationId: listPartnerBookings
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: statusGroup
+          in: query
+          schema: {type: string, enum: [new, payment, booked, history, all], default: all}
+      responses:
+        '200':
+          description: Bookings belonging only to venues managed by the current partner
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /v1/partner/bookings/{bookingId}/confirm:
     post:
       tags: [Partner]
@@ -546,6 +568,36 @@ paths:
                 $ref: '#/components/schemas/Booking'
         '409':
           $ref: '#/components/responses/SlotConflict'
+
+  /v1/partner/bookings/{bookingId}/reject:
+    post:
+      tags: [Partner]
+      operationId: rejectPartnerBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 5, maxLength: 1000}
+      responses:
+        '200':
+          description: Request rejected and any unpaid hold released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Booking status no longer allows rejection
 
   /v1/partner/bookings/{bookingId}/proposal:
     post:
@@ -910,7 +962,7 @@ components:
 
     BookingRoom:
       type: object
-      required: [id, slug, title, type, capacityMax, pricePerHour, amount, isPrimary]
+      required: [id, slug, title, type, capacityMax, pricePerHour, amount, isPrimary, bufferMinutes]
       properties:
         id: {type: string, format: uuid}
         slug: {type: string}
@@ -920,6 +972,7 @@ components:
         pricePerHour: {type: number, minimum: 0}
         amount: {type: number, minimum: 0}
         isPrimary: {type: boolean}
+        bufferMinutes: {type: integer, minimum: 0, maximum: 60}
 
     BookingService:
       type: object
@@ -946,11 +999,13 @@ components:
         guests: {type: integer}
         clientName: {type: string}
         clientPhone: {type: [string, 'null'], description: Null for partner before prepayment}
-        clientEmail: {type: [string, 'null'], format: email}
+        clientEmail: {type: [string, 'null'], format: email, description: Null for partner before prepayment}
         eventType: {type: [string, 'null']}
         eventName: {type: [string, 'null']}
         onSitePaymentMethod: {type: string, enum: [card, cash]}
         comment: {type: string}
+        cancellationReason: {type: [string, 'null']}
+        cancelledBy: {type: [string, 'null'], enum: [client, partner, admin, null]}
         services: {type: array, items: {$ref: '#/components/schemas/BookingService'}}
         money: {$ref: '#/components/schemas/MoneyBreakdown'}
         paymentHoldExpiresAt: {type: [string, 'null'], format: date-time}

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { hashPassword, MemoryAuthRepository } from "../src/auth.js";
 import { availabilityForRoom } from "../src/availability.js";
-import { MemoryCatalogRepository, roomIds } from "../src/catalog.js";
+import { MemoryBookingRepository } from "../src/bookings.js";
+import { demoVenues, MemoryCatalogRepository, roomIds, venueIds } from "../src/catalog.js";
 import type { Room } from "../src/types.js";
 
 let app: FastifyInstance;
@@ -228,6 +230,136 @@ test("client profile and bookings use authenticated server data and server price
   });
   assert.equal(unavailable.statusCode, 409);
   assert.equal(unavailable.json().code, "SLOT_UNAVAILABLE");
+});
+
+test("partner queue holds one conflicting booking for 15 minutes and hides the client phone", async () => {
+  const partnerId = "50000000-0000-4000-8000-000000000001";
+  const partnerPassword = "rooms2026";
+  let clock = new Date();
+  const authRepository = new MemoryAuthRepository([{
+    id: partnerId,
+    role: "partner",
+    name: "Менеджер Kids Loft",
+    email: "manager@kids-loft.ru",
+    phone: null,
+    city: "Воронеж",
+    passwordHash: await hashPassword(partnerPassword),
+    passwordResetRequired: false,
+    blockedAt: null,
+  }]);
+  const venue = demoVenues.find((item) => item.id === venueIds.kidsLoft)!;
+  const bookingRepository = new MemoryBookingRepository({
+    partners: [{ userId: partnerId, venue }],
+    now: () => new Date(clock),
+  });
+  const partnerApp = buildApp({ logger: false, authRepository, bookingRepository });
+  await partnerApp.ready();
+  const future = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const legal = { termsVersion: "test-1", privacyVersion: "test-1", acceptedAt: new Date().toISOString() };
+  const register = async (index: number) => {
+    const response = await partnerApp.inject({
+      method: "POST",
+      url: "/v1/auth/client/register",
+      payload: {
+        name: `Клиент ${index}`,
+        email: `partner-flow-${index}@rooms.test`,
+        phone: `+7 901 000-00-0${index}`,
+        city: "Воронеж",
+        password: `partner-client-${index}-2026`,
+        legal,
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    return response.json().accessToken as string;
+  };
+  const createBooking = async (accessToken: string) => {
+    const response = await partnerApp.inject({
+      method: "POST",
+      url: "/v1/bookings",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: {
+        primaryRoomId: roomIds.kosmos,
+        roomIds: [roomIds.kosmos],
+        startsAt: `${future}T10:00:00+03:00`,
+        durationMinutes: 120,
+        guests: 6,
+        eventType: "kids",
+        onSitePaymentMethod: "card",
+        legal,
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    return response.json();
+  };
+  const firstClientToken = await register(1);
+  const secondClientToken = await register(2);
+  const first = await createBooking(firstClientToken);
+  const second = await createBooking(secondClientToken);
+  const login = await partnerApp.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: { login: "manager@kids-loft.ru", password: partnerPassword },
+  });
+  assert.equal(login.statusCode, 200);
+  assert.equal(login.json().user.role, "partner");
+  const partnerToken = login.json().accessToken as string;
+  const partnerHeaders = { authorization: `Bearer ${partnerToken}` };
+
+  const assignedVenue = await partnerApp.inject({ method: "GET", url: "/v1/partner/venue", headers: partnerHeaders });
+  assert.equal(assignedVenue.statusCode, 200);
+  assert.equal(assignedVenue.json().id, venueIds.kidsLoft);
+  const queue = await partnerApp.inject({ method: "GET", url: "/v1/partner/bookings?statusGroup=new", headers: partnerHeaders });
+  assert.equal(queue.statusCode, 200);
+  assert.equal(queue.json().length, 2);
+  assert.equal(queue.json()[0].clientPhone, null);
+  assert.equal(queue.json()[0].clientEmail, null);
+
+  const confirmed = await partnerApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${first.id}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(confirmed.statusCode, 200);
+  assert.equal(confirmed.json().status, "awaiting_payment");
+  assert.equal(confirmed.json().clientPhone, null);
+  assert.equal(confirmed.json().clientEmail, null);
+  assert.ok(new Date(confirmed.json().paymentHoldExpiresAt).getTime() > clock.getTime());
+
+  const conflict = await partnerApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${second.id}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(conflict.json().code, "SLOT_CONFLICT");
+  const rejected = await partnerApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${second.id}/reject`,
+    headers: partnerHeaders,
+    payload: { reason: "Время больше недоступно" },
+  });
+  assert.equal(rejected.statusCode, 200);
+  assert.equal(rejected.json().status, "cancelled");
+
+  clock = new Date(clock.getTime() + 16 * 60_000);
+  const expired = await partnerApp.inject({
+    method: "GET",
+    url: "/v1/bookings?statusGroup=cancelled",
+    headers: { authorization: `Bearer ${firstClientToken}` },
+  });
+  assert.equal(expired.statusCode, 200);
+  assert.equal(expired.json()[0].status, "expired");
+  assert.equal(expired.json()[0].paymentHoldExpiresAt, null);
+
+  const third = await createBooking(firstClientToken);
+  const confirmedAfterExpiry = await partnerApp.inject({
+    method: "POST",
+    url: `/v1/partner/bookings/${third.id}/confirm`,
+    headers: partnerHeaders,
+  });
+  assert.equal(confirmedAfterExpiry.statusCode, 200);
+  assert.equal(confirmedAfterExpiry.json().status, "awaiting_payment");
+  await partnerApp.close();
 });
 
 test("city stats expose exact supply and bucket the public audience", async () => {

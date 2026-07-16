@@ -1081,8 +1081,8 @@
       {room:"voice-vip",name:"Ольга",rating:4,date:"май 2026",text:"Уютная мягкая зона и приватный формат. Хотелось бы чуть больше света возле стола, но в целом понравилось."},
       {room:"terrace-hall",name:"Екатерина",rating:5,date:"июнь 2026",text:"Светлый зал, красиво смотрится на фото. Для семейного банкета оказалось удобно по посадке и по общению с площадкой."}
     ];
-    const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname);
-    const apiState={base:apiQuery==="local"||localPreview?"http://127.0.0.1:3000":"",connected:false,storage:"",reviews:new Map(),accessToken:""};
+    const apiQuery=new URLSearchParams(location.search).get("api"),localPreview=["localhost","127.0.0.1"].includes(location.hostname),localApiBase=localPreview?location.origin:"http://127.0.0.1:3000";
+    const apiState={base:apiQuery==="local"||localPreview?localApiBase:"",connected:false,storage:"",reviews:new Map(),accessToken:"",partnerBookingsLoaded:false};
     async function apiRequest(path,{method="GET",body,auth=false,retry=true}={}){
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3500);
       const headers={Accept:"application/json"};
@@ -1103,11 +1103,15 @@
     function syncApiUser(user){
       const account={id:user.id,role:user.role,name:user.name,email:user.email||"",phone:phone(user.phone),city:user.city||state.city,passwordResetRequired:Boolean(user.passwordResetRequired),api:true,lastActiveAt:new Date().toISOString()};
       const next=accounts().filter(item=>item.id!==account.id&&String(item.email||"").toLowerCase()!==String(account.email||"").toLowerCase()&&phone(item.phone)!==account.phone);
-      write(store.accounts,[...next,account]);write(store.session,{id:account.id,source:"api"});
+      write(store.accounts,[...next,account]);write(store.session,{id:account.id,source:"api"});localStorage.removeItem(store.partnerAuth);apiState.partnerBookingsLoaded=false;
       if(account.city)selectCity(account.city,false,false);
       return account;
     }
-    function acceptApiSession(payload){apiState.accessToken=payload.accessToken||"";return syncApiUser(payload.user)}
+    function syncApiPartnerUser(user){
+      const login=String(user.email||"").trim().toLowerCase(),list=ensurePartnerAccounts(),existing=list.find(item=>item.apiUserId===user.id||String(item.login||"").toLowerCase()===login),account={...(existing||{}),id:existing?.id||`PA-${user.id}`,apiUserId:user.id,login:login||existing?.login||"",venueId:existing?.venueId||"",venueTitle:existing?.venueTitle||"Площадка",mustChangePassword:Boolean(user.passwordResetRequired),status:existing?.status||"setup",api:true,name:user.name};
+      savePartnerAccounts([account,...list.filter(item=>item.id!==account.id)]);write(store.partnerAuth,{accountId:account.id,login:account.login,verified:true,api:true,authenticatedAt:new Date().toISOString()});localStorage.removeItem(store.session);return account;
+    }
+    function acceptApiSession(payload){apiState.accessToken=payload.accessToken||"";return payload.user?.role==="partner"?syncApiPartnerUser(payload.user):syncApiUser(payload.user)}
     function apiBookingDateTime(value){
       const parts=Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Moscow",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(value)).map(part=>[part.type,part.value]));
       return {date:`${parts.year}-${parts.month}-${parts.day}`,time:`${parts.hour}:${parts.minute}`};
@@ -1115,18 +1119,26 @@
     function localBookingFromApi(item){
       const primary=item.rooms.find(room=>room.isPrimary)||item.rooms[0],primaryLocal=rooms.find(room=>room.apiId===primary?.id||room.id===primary?.slug),start=apiBookingDateTime(item.startsAt),hours=Math.max(.5,(new Date(item.endsAt)-new Date(item.startsAt))/3600000);
       const extras=item.rooms.filter(room=>room!==primary).map(room=>{const local=rooms.find(item=>item.apiId===room.id||item.id===room.slug);return {id:local?.id||room.slug||room.id,title:room.title,price:Number(room.pricePerHour)||0,capacity:Number(room.capacityMax)||1}});
-      return {id:item.id,publicNumber:item.publicNumber,roomId:primaryLocal?.id||primary?.slug||primary?.id,room:primary?.title||"Помещение",roomPrice:Number(primary?.pricePerHour)||0,extraRooms:extras,venue:item.venue.title,city:item.venue.city,date:start.date,time:start.time,hours,guests:Number(item.guests)||1,name:item.clientName,phone:phone(item.clientPhone),eventType:item.eventType||"",eventName:item.eventName||"",paymentMethod:item.onSitePaymentMethod||"card",comment:item.comment||"",services:(item.services||[]).map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})),total:Number(item.money?.total)||0,prepay:Number(item.money?.prepayment)||0,policy:bookingPolicySnapshot(Number(item.money?.prepayment)||0),status:item.status,created:item.createdAt,server:true,history:[historyEntry("created","Заявка создана",`${start.date} в ${start.time} · ${hours} ч · ${item.guests} гостей`,"client")]};
+      return {id:item.id,publicNumber:item.publicNumber,roomId:primaryLocal?.id||primary?.slug||primary?.id,room:primary?.title||"Помещение",roomPrice:Number(primary?.pricePerHour)||0,extraRooms:extras,venue:item.venue.title,city:item.venue.city,date:start.date,time:start.time,hours,guests:Number(item.guests)||1,name:item.clientName,phone:phone(item.clientPhone),eventType:item.eventType||"",eventName:item.eventName||"",paymentMethod:item.onSitePaymentMethod||"card",comment:item.comment||"",services:(item.services||[]).map(service=>({id:service.id,name:service.name,desc:service.description||"",price:Number(service.price)||0})),total:Number(item.money?.total)||0,prepay:Number(item.money?.prepayment)||0,policy:bookingPolicySnapshot(Number(item.money?.prepayment)||0),status:item.status,paymentDueAt:item.paymentHoldExpiresAt||"",cancelReason:item.cancellationReason||"",cancelledBy:item.cancelledBy||"",created:item.createdAt,server:true,history:[historyEntry("created","Заявка создана",`${start.date} в ${start.time} · ${hours} ч · ${item.guests} гостей`,"client")]};
     }
     function mergeApiBookings(items){
       const mapped=(items||[]).map(localBookingFromApi),ids=new Set(mapped.map(item=>item.id)),legacy=read(store.bookings,[]).filter(item=>!item.server&&!ids.has(item.id));write(store.bookings,[...mapped,...legacy].slice(0,100));return mapped;
     }
     async function syncApiBookings(){if(!apiState.connected||!apiState.accessToken)return [];return mergeApiBookings(await apiRequest("/v1/bookings?statusGroup=all",{auth:true}))}
+    function mergePartnerApiBookings(items){const mapped=(items||[]).map(localBookingFromApi);apiState.partnerBookingsLoaded=true;write(store.bookings,mapped.slice(0,100));return mapped}
+    async function syncPartnerApiBookings(){if(!apiState.connected||!apiState.accessToken)return [];return mergePartnerApiBookings(await apiRequest("/v1/partner/bookings?statusGroup=all",{auth:true}))}
+    function syncApiPartnerVenue(venueData){
+      mergeApiVenue(venueData);const auth=partnerAuthSession(),list=ensurePartnerAccounts(),currentAccount=list.find(item=>item.id===auth?.accountId||item.api===true),account=currentAccount?{...currentAccount,venueId:venueData.slug,venueTitle:venueData.title,status:"active",api:true}:currentAccount;
+      if(account){savePartnerAccounts([account,...list.filter(item=>item.id!==account.id)]);write(store.partnerAuth,{...auth,accountId:account.id,verified:true,api:true})}
+      const data=partnerData();data.venue={...data.venue,id:venueData.slug,apiId:venueData.id,city:venueData.city,title:venueData.title,address:venueData.address,paymentMethods:venueData.paymentMethods,publicationStatus:venueData.publicationStatus,partnerMode:venueData.partnerMode};savePartnerData(data);return account;
+    }
+    async function syncPartnerApiContext(){const venueData=await apiRequest("/v1/partner/venue",{auth:true});syncApiPartnerVenue(venueData);return syncPartnerApiBookings()}
     async function restoreApiSession(){
-      const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null;
-      if(!session||(!session.source&&!account?.api))return null;
-      try{const restored=acceptApiSession(await apiRequest("/v1/auth/refresh",{method:"POST"}));await syncApiBookings();return restored}
+      const session=read(store.session,null),account=session?accounts().find(item=>item.id===session.id):null,partnerSession=partnerAuthSession();
+      if((!session||(!session.source&&!account?.api))&&!partnerSession?.api)return null;
+      try{const payload=await apiRequest("/v1/auth/refresh",{method:"POST"}),restored=acceptApiSession(payload);if(payload.user?.role==="partner"){await syncPartnerApiContext();if(location.hash===partnerRoute)renderPartnerCabinet(true)}else await syncApiBookings();return restored}
       catch(error){
-        if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(account?.api){write(store.accounts,accounts().filter(item=>item.id!==account.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}}
+        if(error.status===401){apiState.accessToken="";localStorage.removeItem(store.session);if(partnerSession?.api){localStorage.removeItem(store.partnerAuth);apiState.partnerBookingsLoaded=false}if(account?.api){write(store.accounts,accounts().filter(item=>item.id!==account.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}}
         return null;
       }
     }
@@ -1971,7 +1983,7 @@
         {id:"R-240720",roomId:"terrace-hall",room:"Большой зал",venue:"Terrace 36",city:"Воронеж",date:day(2),time:"16:00",hours:5,guests:24,name:"Екатерина",phone:"79204567890",eventType:"banquet",eventName:"Юбилей",total:17000,prepay:5100,status:"pending",created:new Date().toISOString()}
       ];
     }
-    function adminBookings(){const list=read(store.bookings,[]);return list.length?list:demoBookings()}
+    function adminBookings(){const list=read(store.bookings,[]);return list.length||apiState.partnerBookingsLoaded?list:demoBookings()}
     function saveAdminBookings(list){write(store.bookings,list.slice(0,80))}
     function storedBookings(){return read(store.bookings,[])}
     function bookingContainsRoom(b,id){return b.roomId===id||(b.extraRooms||[]).some(room=>room.id===id)}
@@ -3206,9 +3218,9 @@
         const text=status==="pending"?"Площадка проверяет доступность и подтвердит заявку.":status==="paid"?"Предоплата внесена. После посещения можно будет оставить отзыв.":status==="expired"?"Время на предоплату истекло. Слот снова доступен в каталоге.":status==="visited"||status==="completed"?"Посещение состоялось. Теперь можно оставить отзыв в карточке помещения.":"Заявка отменена.";
         return `<p class="muted" style="margin:10px 0 0">${text}</p>`;
       }
-      const actor=area==="partner"?"partner":"admin";
-      if(status==="pending")return `<button class="btn primary" data-booking-status="${b.id}|awaiting_payment" ${after} type="button">Подтвердить и отправить на оплату</button><button class="btn" data-propose-booking="${b.id}|${area}" type="button">Предложить время</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
-      if(status==="proposed")return `<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Изменить предложение</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`;
+      const actor=area==="partner"?"partner":"admin",cancelLabel=area==="partner"?"Отклонить":"Отменить",proposalButton=area==="partner"&&b.server?"":`<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Предложить время</button>`;
+      if(status==="pending")return `<button class="btn primary" data-booking-status="${b.id}|awaiting_payment" ${after} type="button">Подтвердить и отправить на оплату</button>${proposalButton}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">${cancelLabel}</button>`;
+      if(status==="proposed")return `<button class="btn" data-propose-booking="${b.id}|${area}" type="button">Изменить предложение</button><button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">${cancelLabel}</button>`;
       if(status==="awaiting_payment")return `<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><button class="btn" data-booking-status="${b.id}|pending" ${after} type="button">Вернуть в новые</button>`;
       if(status==="paid")return bookingHasEnded(b)?`<button class="btn primary" data-booking-status="${b.id}|visited" ${after} type="button">Посещение состоялось</button>${receiptButton(b,area)}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button>`:`${receiptButton(b,area)}<button class="btn" data-cancel-booking="${b.id}|${actor}|${area}" type="button">Отменить</button><p class="muted" style="flex-basis:100%;margin:2px 0 0">Завершить бронь можно после окончания мероприятия.</p>`;
       if(status==="cancelled"&&b.paymentStatus==="refund_pending"){
@@ -3470,8 +3482,19 @@
       emailField?.insertAdjacentHTML("afterend",`<div class="field full"><label>Реквизиты для выплат</label><span class="muted">Доступны только партнёру, бухгалтеру и администратору Rooms.</span></div><div class="field"><label>Банк</label><input name="bankName" value="${esc(data.venue.bankName||"")}" placeholder="Например, СберБанк"></div><div class="field"><label>БИК</label><input name="bik" inputmode="numeric" maxlength="9" value="${esc(data.venue.bik||"")}" placeholder="9 цифр"></div><div class="field full"><label>Расчётный счёт</label><input name="settlementAccount" inputmode="numeric" maxlength="20" value="${esc(data.venue.settlementAccount||"")}" placeholder="20 цифр"></div>`);
       if(keep)requestAnimationFrame(()=>E.modalBox.scrollTop=top);
     }
-    function partnerLogin(form){
+    async function partnerLogin(form){
       localStorage.removeItem(store.partnerAuth);
+      if(apiState.connected){
+        const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+        try{
+          const payload=await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}});
+          if(payload.user?.role!=="partner"){apiState.accessToken=payload.accessToken||"";await apiRequest("/v1/auth/logout",{method:"POST",auth:true}).catch(()=>null);apiState.accessToken="";throw new Error("Этот логин не относится к кабинету партнёра.")}
+          acceptApiSession(payload);await syncPartnerApiContext();const account=currentPartnerAccount();if(!account)throw new Error("Для кабинета ещё не назначена площадка.");
+          routePartnerAccount(account);toast("Вы вошли в кабинет партнёра.");
+        }catch(error){toast(error.message||"Не удалось войти в кабинет партнёра.")}
+        finally{if(submit)submit.disabled=false}
+        return;
+      }
       const login=String(form.login.value||"").trim().toLowerCase(),password=String(form.password.value||""),account=partnerAccountByLogin(login);
       if(!account||!account.password||account.password!==password)return toast("Неверный email или пароль партнёра.");
       if(account.status==="blocked")return toast("Доступ площадки приостановлен. Свяжитесь с Rooms.");
@@ -3695,10 +3718,16 @@
       list=list.map(b=>b.id===id?appendBookingHistory({...b,status:"completed",completedAt,completedByClient:true},"client_complete","Клиент подтвердил завершение","Посещение прошло, отзыв доступен.","client"):b);
       item=list.find(b=>b.id===id);saveAdminBookings(list);logActivity("booking_complete","Клиент подтвердил завершение",`${item.id} · ${item.room}`,"client");hydrate();profileBookingFilter="completed";renderProfile(true);toast("Бронь завершена. Теперь можно оставить отзыв.");
     }
-    function updateBookingStatus(payload,after="admin"){
+    async function updateBookingStatus(payload,after="admin"){
       const [id,status]=payload.split("|");let list=read(store.bookings,[]);
       if(!list.length)list=demoBookings();
       const currentBooking=list.find(b=>b.id===id),mainRoom=rooms.find(room=>room.id===currentBooking?.roomId);
+      if(after==="partner"&&currentPartnerAccount()?.api&&currentBooking?.server){
+        if(status!=="awaiting_payment"&&status!=="confirmed")return toast("Это действие пока недоступно для серверной заявки.");
+        try{await apiRequest(`/v1/partner/bookings/${encodeURIComponent(id)}/confirm`,{method:"POST",auth:true});await syncPartnerApiBookings();const updated=read(store.bookings,[]).find(b=>b.id===id);hydrate();partnerBookingFilter=updated?partnerBookingGroup(updated):"payment";renderPartnerCabinet(true);toast("Заявка подтверждена. Слот удерживается 15 минут до предоплаты.")}
+        catch(error){toast(error.message||"Не удалось подтвердить заявку. Обновите очередь.");await syncPartnerApiBookings().catch(()=>null);renderPartnerCabinet(true)}
+        return;
+      }
       if(currentBooking&&mainRoom&&(status==="awaiting_payment"||status==="confirmed")&&combinedBookingCapacity(mainRoom,currentBooking.extraRooms||[],currentBooking.date,currentBooking.time)<Number(currentBooking.hours))return toast("Подтвердить заявку нельзя: одно из выбранных помещений уже занято.");
       if(currentBooking&&(status==="visited"||status==="completed")&&!bookingHasEnded(currentBooking))return toast("Завершить бронь можно только после окончания мероприятия.");
       list=list.map(b=>{
@@ -3750,12 +3779,17 @@
       const paid=isPrepayPaid(b),actorText=cancelActorLabel(actor),policy=bookingPolicyLine(b);
       openModal(`<span class="kicker">${esc(b.venue)} · ${esc(b.room)}</span><h2 style="margin:0">Отмена брони</h2><p class="muted">Отменяет: ${actorText}. ${paid?"Бронь уже оплачена, поэтому причину важно сохранить для возврата и разбора спорной ситуации.":"Причина будет видна в карточке заявки."}</p>${policy?`<p class="policy-note">Правила: ${esc(policy)}</p>`:""}<form id="cancelBookingForm" data-booking="${b.id}" data-actor="${actor}" data-after="${after}"><div class="form"><div class="field full"><label>Причина отмены</label><select name="reasonPreset"><option value="">Выберите причину</option><option>Время больше недоступно</option><option>Клиент попросил отменить</option><option>Не подходит формат мероприятия</option><option>Ошибка в расписании</option><option>Другая причина</option></select></div><div class="field full"><label>Комментарий</label><textarea name="reason" minlength="5" placeholder="Коротко опишите, почему отменяется заявка" required></textarea></div></div><div class="chips" style="margin-top:14px"><button class="btn primary" type="submit">Подтвердить отмену</button><button class="btn" data-close-modal type="button">Назад</button></div></form>`,true);
     }
-    function submitCancelBooking(form){
+    async function submitCancelBooking(form){
       const id=form.dataset.booking,actor=form.dataset.actor||"admin",after=form.dataset.after||"admin",fd=new FormData(form);
       const reason=[fd.get("reasonPreset"),fd.get("reason")].filter(Boolean).join(": ").trim();
       if(reason.length<5)return toast("Укажите причину отмены.");
       let list=read(store.bookings,[]);if(!list.length)list=demoBookings();
       const prev=list.find(b=>b.id===id),wasPaid=prev&&isPrepayPaid(prev);
+      if(after==="partner"&&currentPartnerAccount()?.api&&prev?.server){
+        try{await apiRequest(`/v1/partner/bookings/${encodeURIComponent(id)}/reject`,{method:"POST",auth:true,body:{reason}});await syncPartnerApiBookings();hydrate();partnerBookingFilter="history";renderPartnerCabinet(true);toast("Заявка отклонена, удержание времени снято.")}
+        catch(error){toast(error.message||"Не удалось отклонить заявку. Обновите очередь.");await syncPartnerApiBookings().catch(()=>null);renderPartnerCabinet(true)}
+        return;
+      }
       list=list.map(b=>b.id===id?appendBookingHistory({...b,status:"cancelled",cancelledBy:actor,cancelReason:reason,cancelledAt:new Date().toISOString(),paymentStatus:wasPaid?"refund_pending":b.paymentStatus,proposal:null,paymentDueAt:""},"cancel","Бронь отменена",reason,actor):b);
       const updated=list.find(b=>b.id===id);
       saveAdminBookings(list);logActivity("booking_cancel","Бронь отменена",`${updated?.id||id} · ${cancelActorLabel(actor)} · ${reason}`,actor);hydrate();
@@ -3978,7 +4012,9 @@
       if(apiState.connected){
         const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
         try{
-          const acc=acceptApiSession(await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}));await syncApiBookings();
+          const payload=await apiRequest("/v1/auth/login",{method:"POST",body:{login:form.login.value,password:form.password.value}}),acc=acceptApiSession(payload);
+          if(payload.user?.role==="partner"){pending=null;await syncPartnerApiContext();hydrate();routePartnerAccount(currentPartnerAccount());toast(`С возвращением, ${acc.name||acc.venueTitle}.`);return}
+          await syncApiBookings();
           if(pending){await saveBooking(pending);closeModal()}else renderProfile();
           hydrate();showPendingUserNotice();toast(`С возвращением, ${acc.name}.`);
         }catch(error){toast(error.message||"Не удалось войти. Повторите попытку.")}
@@ -4016,6 +4052,12 @@
       if(acc?.api&&apiState.connected){try{await apiRequest("/v1/auth/logout",{method:"POST",auth:true})}catch(error){console.info("Rooms: серверный выход завершён локально.",error)}}
       if(acc?.api){write(store.accounts,accounts().filter(item=>item.id!==acc.id));write(store.bookings,read(store.bookings,[]).filter(item=>!item.server))}
       apiState.accessToken="";localStorage.removeItem(store.session);hydrate();closeModal();toast("Вы вышли.");
+    }
+    async function logoutPartner(){
+      const account=currentPartnerAccount();
+      if(account?.api&&apiState.connected){try{await apiRequest("/v1/auth/logout",{method:"POST",auth:true})}catch(error){console.info("Rooms: серверный выход партнёра завершён локально.",error)}}
+      if(account?.api)write(store.bookings,read(store.bookings,[]).filter(item=>!item.server));
+      apiState.accessToken="";apiState.partnerBookingsLoaded=false;localStorage.removeItem(store.partnerAuth);updateNoticeBadge();leavePartnerWorkspace();toast("Вы вышли из кабинета партнёра.");
     }
     async function savePersonalData(form){
       const acc=current();if(!acc)return renderAuth();
@@ -4200,7 +4242,7 @@
       if(e.target.closest("[data-partner-login]")){openPartner();return}
       const partnerSite=e.target.closest("[data-partner-site]");if(partnerSite){leavePartnerWorkspace(partnerSite.dataset.partnerSite||"");return}
       if(e.target.closest("[data-logout]")){void logoutClient()}
-      if(e.target.closest("[data-partner-logout]")){localStorage.removeItem(store.partnerAuth);updateNoticeBadge();leavePartnerWorkspace();toast("Вы вышли из кабинета партнёра.");return}
+      if(e.target.closest("[data-partner-logout]")){void logoutPartner();return}
       if(e.target.closest("[data-close-modal]"))requestCloseModal();
     });
     document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!E.modal.classList.contains("workspace"))requestCloseModal();if(E.modal.classList.contains("open")&&(e.key==="ArrowLeft"||e.key==="ArrowRight")&&!e.target.matches("input,select,textarea")){const wrap=galleryWrap();if(wrap){e.preventDefault();moveGallery(wrap,e.key==="ArrowRight"?1:-1);return}}if((e.key==="Enter"||e.key===" ")&&e.target.matches("[data-open-venue]")){e.preventDefault();renderSpace(e.target.dataset.openVenue)}});

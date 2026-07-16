@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { Pool, type PoolClient } from "pg";
-import { demoReviews, demoRooms, demoVenues } from "../src/catalog.js";
+import { hashPassword } from "../src/auth.js";
+import { demoReviews, demoRooms, demoVenues, venueIds } from "../src/catalog.js";
 import { postgresPoolConfig } from "../src/storage.js";
 
 if (process.env.ALLOW_DEMO_SEED !== "true") {
@@ -69,6 +70,24 @@ async function seedRoom(client: PoolClient, room: (typeof demoRooms)[number]): P
   }
 }
 
+async function seedDemoPartner(client: PoolClient): Promise<void> {
+  const passwordHash = await hashPassword("rooms2026");
+  const result = await client.query<{ id: string }>(`
+    insert into users (id, role, name, email, city, password_hash, password_reset_required)
+    values ('50000000-0000-4000-8000-000000000001','partner','Менеджер Kids Loft','manager@kids-loft.ru','Воронеж',$1,false)
+    on conflict (email) do update set
+      role = 'partner', name = excluded.name, city = excluded.city,
+      password_hash = excluded.password_hash, password_reset_required = false,
+      blocked_at = null, updated_at = now()
+    returning id::text
+  `, [passwordHash]);
+  await client.query(`
+    insert into venue_members (venue_id, user_id, member_role)
+    values ($1::uuid,$2::uuid,'manager')
+    on conflict (venue_id, user_id) do update set member_role = excluded.member_role
+  `, [venueIds.kidsLoft, result.rows[0]!.id]);
+}
+
 async function seedReview(client: PoolClient, review: (typeof demoReviews)[number], index: number): Promise<void> {
   const room = demoRooms.find((item) => item.id === review.roomId);
   if (!room) throw new Error(`Demo review ${review.id} references an unknown room.`);
@@ -135,10 +154,11 @@ const client = await pool.connect();
 try {
   await client.query("begin");
   for (const venue of demoVenues) await seedVenue(client, venue);
+  await seedDemoPartner(client);
   for (const room of demoRooms) await seedRoom(client, room);
   for (const [index, review] of demoReviews.entries()) await seedReview(client, review, index);
   await client.query("commit");
-  console.log(`Seeded ${demoVenues.length} venues, ${demoRooms.length} rooms and ${demoReviews.length} reviews.`);
+  console.log(`Seeded ${demoVenues.length} venues, ${demoRooms.length} rooms, ${demoReviews.length} reviews and the demo partner.`);
 } catch (error) {
   await client.query("rollback");
   throw error;

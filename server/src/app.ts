@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuthConflictError, AuthService, MemoryAuthRepository, normalizeRussianPhone, type AuthRepository, type IssuedAuthSession } from "./auth.js";
-import { MemoryBookingRepository, type BookingRepository, type BookingStatusGroup } from "./bookings.js";
+import { MemoryBookingRepository, type BookingRepository, type BookingStatusGroup, type PartnerBookingStatusGroup } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import type {
@@ -107,6 +107,18 @@ interface BookingCreateBody {
 
 interface BookingQuery {
   statusGroup?: BookingStatusGroup;
+}
+
+interface PartnerBookingQuery {
+  statusGroup?: PartnerBookingStatusGroup;
+}
+
+interface BookingParams {
+  bookingId: string;
+}
+
+interface PartnerBookingRejectBody {
+  reason: string;
 }
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -568,6 +580,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       pricePerHour: room.pricePerHour,
       amount: moneyAmount(room.pricePerHour * hours),
       isPrimary: room.id === body.primaryRoomId,
+      bufferMinutes: room.bufferMinutes,
     }));
     const bookingServices = serviceIds.map((id) => {
       const service = availableServices.get(id)!;
@@ -602,6 +615,70 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       userAgent: request.headers["user-agent"] ?? null,
     });
     return reply.code(201).send(booking);
+  });
+
+  app.get("/v1/partner/venue", async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    const venue = await config.bookingRepository.getPartnerVenue(current.user.id);
+    if (!venue) throw new ApiError(404, "PARTNER_VENUE_NOT_FOUND", "Для этого кабинета площадка ещё не назначена.");
+    return venue;
+  });
+
+  app.get<{ Querystring: PartnerBookingQuery }>("/v1/partner/bookings", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          statusGroup: { type: "string", enum: ["new", "payment", "booked", "history", "all"] },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    return config.bookingRepository.listByPartner(current.user.id, request.query.statusGroup ?? "all");
+  });
+
+  app.post<{ Params: BookingParams }>("/v1/partner/bookings/:bookingId/confirm", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    const booking = await config.bookingRepository.confirmByPartner(current.user.id, request.params.bookingId);
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    return booking;
+  });
+
+  app.post<{ Params: BookingParams; Body: PartnerBookingRejectBody }>("/v1/partner/bookings/:bookingId/reject", {
+    schema: {
+      params: {
+        type: "object",
+        additionalProperties: false,
+        required: ["bookingId"],
+        properties: { bookingId: { type: "string", minLength: 36, maxLength: 36 } },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["reason"],
+        properties: { reason: { type: "string", minLength: 5, maxLength: 1000 } },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
+    const booking = await config.bookingRepository.rejectByPartner(current.user.id, request.params.bookingId, request.body.reason.trim());
+    if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    return booking;
   });
 
   app.get<{ Params: CityParams }>("/v1/cities/:cityId/stats", {

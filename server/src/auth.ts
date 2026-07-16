@@ -125,6 +125,10 @@ export class MemoryAuthRepository implements AuthRepository {
   private readonly users = new Map<string, AuthUser>();
   private readonly sessions = new Map<string, AuthSessionRecord>();
 
+  constructor(initialUsers: AuthUser[] = []) {
+    for (const user of initialUsers) this.users.set(user.id, structuredClone(user));
+  }
+
   async createClient(input: ClientRegistrationInput): Promise<AuthUser> {
     const duplicate = [...this.users.values()].some((user) => (
       user.email?.toLocaleLowerCase("ru-RU") === input.email.toLocaleLowerCase("ru-RU") || user.phone === input.phone
