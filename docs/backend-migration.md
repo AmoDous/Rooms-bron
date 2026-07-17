@@ -95,8 +95,8 @@
 
 ### 5. Уведомления и файлы
 
-1. Перенести очередь из `rooms_notification_outbox_v30` в таблицу `notification_deliveries`.
-2. Подключить email provider и Telegram-бота через worker.
+1. [Готово] Перенести очередь из `rooms_notification_outbox_v30` в таблицу `notification_deliveries`; frontend использует её при подключённом API и сохраняет локальный fallback для GitHub Pages.
+2. [Готово на уровне адаптеров] Подключить SMTP и Telegram Bot API через worker с шифрованием, дедупликацией, повторными попытками и очисткой отправленного тела. Для реальной отправки остаётся выдать production credentials.
 3. Загружать фото по подписанным URL, проверять MIME и размер.
 4. Создавать горизонтальные и вертикальные производные без потери оригинала.
 

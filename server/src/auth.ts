@@ -613,6 +613,11 @@ export interface AuthenticatedUser {
   sessionId: string;
 }
 
+export interface PasswordResetRequest {
+  token: string;
+  user: PublicUser | null;
+}
+
 export interface ClientProfileChange {
   name: string;
   email: string;
@@ -668,7 +673,7 @@ export class AuthService {
     return { user: publicUser(user), sessionId: session.id };
   }
 
-  async requestPasswordReset(login: string, ip: string | null, userAgent: string | null): Promise<string> {
+  async requestPasswordReset(login: string, ip: string | null, userAgent: string | null): Promise<PasswordResetRequest> {
     const token = randomBytes(32).toString("base64url");
     const user = await this.repository.findUserByLogin(login, normalizeRussianPhone(login));
     if (user && user.blockedAt === null && user.passwordHash) {
@@ -684,7 +689,7 @@ export class AuthService {
         createdAt,
       });
     }
-    return token;
+    return { token, user: user && user.blockedAt === null && user.passwordHash ? publicUser(user) : null };
   }
 
   async resetPassword(token: string, newPassword: string): Promise<boolean> {

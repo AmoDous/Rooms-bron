@@ -8,6 +8,15 @@ import { MemoryBookingRepository, type BookingRepository, type BookingStatusGrou
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { MemoryPaymentRepository, type PaymentRepository } from "./payments.js";
 import {
+  MemoryNotificationRepository,
+  NotificationCipher,
+  NotificationService,
+  type NotificationChannel,
+  type NotificationDeliveryQuery,
+  type NotificationDeliveryStatus,
+  type NotificationRepository,
+} from "./notifications.js";
+import {
   MemoryPartnerCatalogRepository,
   type AdminModerationQuery,
   type PartnerCatalogRepository,
@@ -44,7 +53,9 @@ interface AppConfig {
   paymentRepository: PaymentRepository;
   reservationRepository: PartnerReservationRepository;
   partnerCatalogRepository: PartnerCatalogRepository;
+  notificationRepository: NotificationRepository;
   authTokenSecret: string;
+  notificationEncryptionKey: string;
   secureCookies: boolean;
   enableDemoPayments: boolean;
   exposePasswordResetToken: boolean;
@@ -120,6 +131,20 @@ interface ClientProfileBody {
   city: string;
   currentPassword?: string;
   newPassword?: string;
+}
+
+interface NotificationSettingsBody {
+  siteEnabled?: true;
+  emailEnabled: boolean;
+  emailAddress?: string | null;
+  telegramEnabled: boolean;
+  telegramChatId?: string | null;
+}
+
+interface NotificationDeliveryQuerystring {
+  status?: NotificationDeliveryStatus;
+  channel?: NotificationChannel;
+  limit?: number;
 }
 
 interface BookingCreateBody {
@@ -532,16 +557,40 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     paymentRepository,
     reservationRepository,
     partnerCatalogRepository,
+    notificationRepository: overrides.notificationRepository ?? new MemoryNotificationRepository(),
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
+    notificationEncryptionKey: overrides.notificationEncryptionKey ?? overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
     secureCookies: overrides.secureCookies ?? false,
     enableDemoPayments: overrides.enableDemoPayments ?? true,
     exposePasswordResetToken: overrides.exposePasswordResetToken ?? false,
   };
   const app = Fastify({ logger: config.logger });
   const auth = new AuthService(config.authRepository, config.authTokenSecret);
+  const notifications = new NotificationService(
+    config.notificationRepository,
+    new NotificationCipher(config.notificationEncryptionKey),
+  );
   const authAttempts = new AuthAttemptLimiter();
   const passwordResetAttempts = new AuthAttemptLimiter();
   const passwordResetConfirmAttempts = new AuthAttemptLimiter();
+
+  const queueNotification = async (label: string, task: () => Promise<unknown>): Promise<void> => {
+    try {
+      await task();
+    } catch (error) {
+      app.log.error({ err: error, notificationEvent: label }, "could not enqueue Rooms notification");
+    }
+  };
+
+  const rememberNotificationUser = async (user: IssuedAuthSession["user"]): Promise<void> => {
+    await queueNotification("remember_user", async () => {
+      await notifications.rememberUser(user);
+      if (user.role === "partner") {
+        const venue = await config.bookingRepository.getPartnerVenue(user.id);
+        if (venue) await notifications.rememberVenueRecipient(venue.id, user);
+      }
+    });
+  };
 
   const requirePartnerVenue = async (authorization: string | undefined) => {
     const current = await auth.authenticate(authorization);
@@ -782,6 +831,13 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       ip: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
     });
+    await rememberNotificationUser(session.user);
+    await queueNotification("client_registered", () => notifications.enqueueUser(session.user, {
+      eventKey: "client_registered",
+      title: "Добро пожаловать в Rooms",
+      body: `${session.user.name}, ваш кабинет создан. Теперь выбранные помещения и заявки будут доступны в одном месте.`,
+      dedupeKey: `client-registered|${session.user.id}`,
+    }));
     refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
     return reply.code(201).send(authResponse(session));
   });
@@ -808,6 +864,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       throw new ApiError(401, "INVALID_CREDENTIALS", "Неверная почта, телефон или пароль.");
     }
     authAttempts.clear(attemptKey);
+    await rememberNotificationUser(session.user);
     refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
     return authResponse(session);
   });
@@ -828,16 +885,19 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       throw new ApiError(429, "PASSWORD_RESET_RATE_LIMITED", "Слишком много запросов. Попробуйте снова через 10 минут.");
     }
     passwordResetAttempts.fail(attemptKey);
-    const token = await auth.requestPasswordReset(login, request.ip, request.headers["user-agent"] ?? null);
+    const reset = await auth.requestPasswordReset(login, request.ip, request.headers["user-agent"] ?? null);
+    const resetUrl = new URL(config.publicSiteUrl);
+    resetUrl.searchParams.set("reset", reset.token);
+    if (reset.user) {
+      await queueNotification("password_reset_requested", () => notifications.enqueuePasswordReset(reset.user!, resetUrl.toString()));
+    }
     const payload: Record<string, unknown> = {
       accepted: true,
       expiresIn: passwordResetLifetimeSeconds,
       message: "Если кабинет найден, ссылка для смены пароля уже отправлена.",
     };
     if (config.exposePasswordResetToken) {
-      const resetUrl = new URL(config.publicSiteUrl);
-      resetUrl.searchParams.set("reset", token);
-      payload.demoToken = token;
+      payload.demoToken = reset.token;
       payload.demoResetUrl = resetUrl.toString();
     }
     return reply.code(202).send(payload);
@@ -877,6 +937,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       clearRefreshCookie(reply, config.secureCookies);
       throw new ApiError(401, "SESSION_EXPIRED", "Сессия завершена. Войдите снова.");
     }
+    await rememberNotificationUser(session.user);
     refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
     return authResponse(session);
   });
@@ -892,6 +953,79 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const current = await auth.authenticate(request.headers.authorization);
     if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
     return current.user;
+  });
+
+  app.get("/v1/me/notification-settings", async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    await rememberNotificationUser(current.user);
+    return notifications.getSettings(current.user);
+  });
+
+  app.patch<{ Body: NotificationSettingsBody }>("/v1/me/notification-settings", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["emailEnabled", "telegramEnabled"],
+        properties: {
+          siteEnabled: { type: "boolean", const: true },
+          emailEnabled: { type: "boolean" },
+          emailAddress: { type: ["string", "null"], maxLength: 254 },
+          telegramEnabled: { type: "boolean" },
+          telegramChatId: { type: ["string", "null"], maxLength: 100 },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    const emailValue = request.body.emailAddress?.trim() || (request.body.emailEnabled ? current.user.email ?? "" : "");
+    const emailAddress = emailValue ? email(emailValue) : null;
+    if (request.body.emailEnabled && !emailAddress) {
+      throw new ApiError(400, "NOTIFICATION_EMAIL_REQUIRED", "Укажите корректную почту для уведомлений.");
+    }
+    const telegramChatId = request.body.telegramChatId?.trim() || null;
+    if (request.body.telegramEnabled && (!telegramChatId || !/^(?:-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/u.test(telegramChatId))) {
+      throw new ApiError(400, "TELEGRAM_CHAT_REQUIRED", "Укажите числовой chat ID Telegram или имя канала вида @rooms_channel.");
+    }
+    return notifications.updateSettings(current.user, {
+      emailEnabled: request.body.emailEnabled,
+      emailAddress,
+      telegramEnabled: request.body.telegramEnabled,
+      telegramChatId,
+    });
+  });
+
+  app.post("/v1/me/notification-settings/test", async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    const deliveries = await notifications.enqueueTest(current.user, `notification-test|${current.user.id}|${Date.now()}`);
+    if (!deliveries.length) throw new ApiError(409, "NOTIFICATION_CHANNELS_DISABLED", "Сначала включите хотя бы один внешний канал.");
+    return reply.code(202).send({ accepted: true, deliveries });
+  });
+
+  app.get<{ Querystring: NotificationDeliveryQuerystring }>("/v1/me/notification-deliveries", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["queued", "processing", "sent", "failed", "cancelled"] },
+          channel: { type: "string", enum: ["email", "telegram"] },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+        },
+      },
+    },
+  }, async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    const query: NotificationDeliveryQuery = {
+      ...(request.query.status ? { status: request.query.status } : {}),
+      ...(request.query.channel ? { channel: request.query.channel } : {}),
+      limit: request.query.limit ?? 50,
+    };
+    return notifications.listForUser(current.user.id, query);
   });
 
   app.get("/v1/me/sessions", async (request) => {
@@ -962,6 +1096,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       ...(request.body.newPassword ? { newPassword: request.body.newPassword } : {}),
     });
     if (!updated) throw new ApiError(401, "CURRENT_PASSWORD_INVALID", "Текущий пароль не подходит.");
+    await rememberNotificationUser(updated);
     return updated;
   });
 
@@ -1030,6 +1165,17 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (blocked) throw new ApiError(422, "CONTACT_DETAILS_BLOCKED", `До предоплаты нельзя передавать ${blocked}.`);
     const message = await config.bookingRepository.addMessage(current.user.id, current.user.role, request.params.bookingId, body);
     if (!message) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена или недоступна этому кабинету.");
+    await queueNotification("booking_message_created", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      const event = {
+        eventKey: "booking_message_created",
+        title: `Новое сообщение по заявке ${booking.publicNumber}`,
+        body: `${current.user.role === "client" ? "Клиент" : booking.venue.title} отправил новое сообщение. Откройте заявку в кабинете Rooms, чтобы ответить.`,
+        dedupeKey: `booking-message|${message.id}`,
+      };
+      if (current.user.role === "client") await notifications.enqueueBookingVenue(booking.id, event);
+      else await notifications.enqueueBookingClient(booking.id, event);
+    });
     return reply.code(201).send(message);
   });
 
@@ -1053,6 +1199,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
     const booking = await config.bookingRepository.acceptProposalByClient(current.user.id, request.params.bookingId, request.body.proposalId);
     if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в личном кабинете.");
+    await queueNotification("booking_proposal_accepted", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingVenue(booking.id, {
+        eventKey: "booking_proposal_accepted",
+        title: `Клиент принял новое время ${booking.publicNumber}`,
+        body: `Предложенное время принято. Заявка ${booking.publicNumber} ожидает подтверждения и предоплаты.`,
+        dedupeKey: `proposal-accepted|${request.body.proposalId}`,
+      });
+    });
     return booking;
   });
 
@@ -1076,6 +1231,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
     const booking = await config.bookingRepository.declineProposalByClient(current.user.id, request.params.bookingId, request.body.proposalId);
     if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в личном кабинете.");
+    await queueNotification("booking_proposal_declined", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingVenue(booking.id, {
+        eventKey: "booking_proposal_declined",
+        title: `Клиент отклонил новое время ${booking.publicNumber}`,
+        body: `Клиент не принял предложенное время. Откройте заявку ${booking.publicNumber}, чтобы согласовать другой вариант.`,
+        dedupeKey: `proposal-declined|${request.body.proposalId}`,
+      });
+    });
     return booking;
   });
 
@@ -1192,6 +1356,22 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       ip: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
     });
+    await queueNotification("booking_created", async () => {
+      await notifications.rememberUser(current.user);
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingVenue(booking.id, {
+        eventKey: "booking_created",
+        title: `Новая заявка ${booking.publicNumber}`,
+        body: `${booking.clientName} выбрал ${booking.rooms.map((room) => room.title).join(", ")}. Проверьте время и ответьте клиенту в кабинете Rooms.`,
+        dedupeKey: `booking-created|${booking.id}|venue`,
+      });
+      await notifications.enqueueBookingClient(booking.id, {
+        eventKey: "booking_created",
+        title: `Заявка ${booking.publicNumber} отправлена`,
+        body: `${booking.venue.title} получил заявку. Мы сообщим, когда площадка подтвердит время.`,
+        dedupeKey: `booking-created|${booking.id}|client`,
+      });
+    });
     return reply.code(201).send(booking);
   });
 
@@ -1228,7 +1408,44 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const payment = await config.paymentRepository.completeDemo(current.user.id, request.params.paymentId);
     const booking = (await config.bookingRepository.listByClient(current.user.id, "all")).find((item) => item.id === payment.bookingId);
     if (!booking) throw new ApiError(409, "BOOKING_STATE_CHANGED", "Статус брони изменился. Обновите личный кабинет.");
+    await queueNotification("booking_prepayment_paid", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingClient(booking.id, {
+        eventKey: "booking_prepayment_paid",
+        title: `Предоплата по заявке ${booking.publicNumber} получена`,
+        body: `Оплачено ${payment.amount.toLocaleString("ru-RU")} руб. Остаток на месте: ${booking.money.remainingOnSite.toLocaleString("ru-RU")} руб.`,
+        dedupeKey: `prepayment-paid|${payment.paymentId}|client`,
+      });
+      await notifications.enqueueBookingVenue(booking.id, {
+        eventKey: "booking_prepayment_paid",
+        title: `Заявка ${booking.publicNumber} оплачена`,
+        body: `Клиент внёс предоплату. Контакты клиента и детали брони доступны в кабинете Rooms.`,
+        dedupeKey: `prepayment-paid|${payment.paymentId}|venue`,
+      });
+    });
     return { payment, booking };
+  });
+
+  app.get<{ Querystring: NotificationDeliveryQuerystring }>("/v1/admin/notification-deliveries", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["queued", "processing", "sent", "failed", "cancelled"] },
+          channel: { type: "string", enum: ["email", "telegram"] },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 80 },
+        },
+      },
+    },
+  }, async (request) => {
+    await requireAdmin(request.headers.authorization);
+    const query: NotificationDeliveryQuery = {
+      ...(request.query.status ? { status: request.query.status } : {}),
+      ...(request.query.channel ? { channel: request.query.channel } : {}),
+      limit: request.query.limit ?? 80,
+    };
+    return notifications.listAll(query);
   });
 
   app.get<{ Querystring: AdminModerationQuerystring }>("/v1/admin/moderation", {
@@ -1518,6 +1735,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const input = await validateBookingProposal(current.user.id, request.params.bookingId, request.body);
     const booking = await config.bookingRepository.proposeTimeByPartner(current.user.id, request.params.bookingId, input);
     if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    await queueNotification("booking_time_proposed", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingClient(booking.id, {
+        eventKey: "booking_time_proposed",
+        title: `${booking.venue.title} предложил другое время`,
+        body: `По заявке ${booking.publicNumber} доступно другое окно. Откройте заявку, чтобы принять или отклонить предложение.`,
+        dedupeKey: `proposal-created|${booking.proposal?.id ?? booking.id}`,
+      });
+    });
     return booking;
   });
 
@@ -1535,6 +1761,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
     const booking = await config.bookingRepository.confirmByPartner(current.user.id, request.params.bookingId);
     if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    await queueNotification("booking_confirmed", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingClient(booking.id, {
+        eventKey: "booking_confirmed",
+        title: `${booking.venue.title} подтвердил заявку`,
+        body: `Время по заявке ${booking.publicNumber} подтверждено. Внесите предоплату в личном кабинете, чтобы закрепить бронь.`,
+        dedupeKey: `booking-confirmed|${booking.id}`,
+      });
+    });
     return booking;
   });
 
@@ -1558,6 +1793,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (!current || current.user.role !== "partner") throw new ApiError(401, "UNAUTHORIZED", "Войдите в кабинет партнёра.");
     const booking = await config.bookingRepository.rejectByPartner(current.user.id, request.params.bookingId, request.body.reason.trim());
     if (!booking) throw new ApiError(404, "BOOKING_NOT_FOUND", "Заявка не найдена в очереди этой площадки.");
+    await queueNotification("booking_rejected", async () => {
+      await notifications.rememberBookingRecipients(booking.id, booking.clientId, booking.venue.id);
+      await notifications.enqueueBookingClient(booking.id, {
+        eventKey: "booking_rejected",
+        title: `Заявка ${booking.publicNumber} не подтверждена`,
+        body: `${booking.venue.title} не смог подтвердить выбранное время. Причина: ${request.body.reason.trim()}`,
+        dedupeKey: `booking-rejected|${booking.id}`,
+      });
+    });
     return booking;
   });
 

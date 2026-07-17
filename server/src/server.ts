@@ -1,11 +1,23 @@
 import "dotenv/config";
 import { buildApp } from "./app.js";
+import {
+  NotificationCipher,
+  NotificationDispatcher,
+  notificationProviderConfigFromEnv,
+  startNotificationWorker,
+} from "./notifications.js";
 import { createCatalogStorage } from "./storage.js";
 
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const port = Number(process.env.PORT || 3001);
 const publicSiteUrl = process.env.PUBLIC_SITE_URL?.trim() || "https://amodous.github.io/Rooms-bron";
 const authTokenSecret = process.env.AUTH_TOKEN_SECRET?.trim() || "";
+const effectiveAuthTokenSecret = authTokenSecret || "rooms-local-development-secret-change-me-2026";
+const notificationEncryptionKey = process.env.NOTIFICATION_ENCRYPTION_KEY?.trim() || effectiveAuthTokenSecret;
+const notificationWorkerEnabled = process.env.NOTIFICATION_WORKER_ENABLED === undefined
+  ? true
+  : String(process.env.NOTIFICATION_WORKER_ENABLED).trim().toLowerCase() === "true";
+const notificationWorkerIntervalMs = Number(process.env.NOTIFICATION_WORKER_INTERVAL_MS || 5000);
 const secureCookies = String(process.env.AUTH_COOKIE_SECURE || "false").trim().toLowerCase() === "true";
 const enableDemoPayments = process.env.ENABLE_DEMO_PAYMENTS === undefined
   ? process.env.NODE_ENV !== "production"
@@ -24,6 +36,12 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 if (process.env.DATABASE_URL?.trim() && Buffer.byteLength(authTokenSecret, "utf8") < 32) {
   throw new Error("AUTH_TOKEN_SECRET must contain at least 32 bytes when PostgreSQL is enabled.");
 }
+if (Buffer.byteLength(notificationEncryptionKey, "utf8") < 32) {
+  throw new Error("NOTIFICATION_ENCRYPTION_KEY must contain at least 32 bytes.");
+}
+if (!Number.isInteger(notificationWorkerIntervalMs) || notificationWorkerIntervalMs < 1000) {
+  throw new Error("NOTIFICATION_WORKER_INTERVAL_MS must be an integer of at least 1000.");
+}
 
 const storage = await createCatalogStorage();
 const app = buildApp({
@@ -36,12 +54,26 @@ const app = buildApp({
   paymentRepository: storage.paymentRepository,
   reservationRepository: storage.reservationRepository,
   partnerCatalogRepository: storage.partnerCatalogRepository,
-  authTokenSecret: authTokenSecret || "rooms-local-development-secret-change-me-2026",
+  notificationRepository: storage.notificationRepository,
+  authTokenSecret: effectiveAuthTokenSecret,
+  notificationEncryptionKey,
   secureCookies,
   enableDemoPayments,
   exposePasswordResetToken,
 });
-app.addHook("onClose", () => storage.close());
+const notificationWorker = notificationWorkerEnabled
+  ? startNotificationWorker(
+      storage.notificationRepository,
+      new NotificationCipher(notificationEncryptionKey),
+      new NotificationDispatcher(notificationProviderConfigFromEnv(), (message) => app.log.info(message)),
+      notificationWorkerIntervalMs,
+      (error) => app.log.error({ err: error }, "Rooms notification worker failed"),
+    )
+  : null;
+app.addHook("onClose", async () => {
+  notificationWorker?.stop();
+  await storage.close();
+});
 
 const stop = async (signal: string) => {
   app.log.info({ signal }, "stopping Rooms API");
@@ -54,7 +86,7 @@ process.once("SIGTERM", () => void stop("SIGTERM"));
 
 try {
   await app.listen({ host, port });
-  app.log.info({ host, port, storage: storage.repository.storage }, "Rooms API is ready");
+  app.log.info({ host, port, storage: storage.repository.storage, notificationWorker: Boolean(notificationWorker) }, "Rooms API is ready");
 } catch (error) {
   app.log.error(error);
   await app.close();

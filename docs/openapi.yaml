@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
     the local Fastify service provides PostgreSQL-backed API endpoints.
@@ -384,6 +384,52 @@ paths:
               schema:
                 $ref: '#/components/schemas/NotificationSettings'
 
+  /v1/me/notification-settings/test:
+    post:
+      tags: [Client]
+      operationId: testNotificationSettings
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Test deliveries accepted by the server queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, deliveries]
+                properties:
+                  accepted: {type: boolean, const: true}
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NotificationDelivery'
+        '409':
+          description: All external channels are disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/me/notification-deliveries:
+    get:
+      tags: [Client]
+      operationId: listOwnNotificationDeliveries
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [queued, processing, sent, failed, cancelled]}}
+        - {name: channel, in: query, schema: {type: string, enum: [email, telegram]}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200':
+          description: Masked delivery history for the authenticated account
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationDelivery'
   /v1/bookings:
     get:
       tags: [Client]
@@ -1825,14 +1871,18 @@ components:
 
     NotificationDelivery:
       type: object
-      required: [id, channel, target, eventKey, status, createdAt]
+      required: [id, channel, target, eventKey, title, status, attempts, createdAt]
       properties:
         id: {type: string, format: uuid}
+        userId: {type: [string, 'null'], format: uuid}
+        venueId: {type: [string, 'null'], format: uuid}
         channel: {type: string, enum: [email, telegram]}
         target: {type: string}
         eventKey: {type: string}
+        title: {type: string}
         status: {type: string, enum: [queued, processing, sent, failed, cancelled]}
         attempts: {type: integer, minimum: 0}
+        nextAttemptAt: {type: [string, 'null'], format: date-time}
         lastError: {type: [string, 'null']}
         createdAt: {type: string, format: date-time}
         sentAt: {type: [string, 'null'], format: date-time}
