@@ -137,6 +137,7 @@ const app = buildApp({
   secureCookies,
   enableDemoPayments,
   exposePasswordResetToken,
+  readinessCheck: storage.check,
 });
 const notificationWorker = notificationWorkerEnabled
   ? startNotificationWorker(

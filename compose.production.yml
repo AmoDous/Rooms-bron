@@ -1,0 +1,52 @@
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - server/.env.production
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3001
+    ports:
+      - "127.0.0.1:${ROOMS_PORT:-3001}:3001"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./server-data/backups:/app/server/server-data/backups:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: tools
+    env_file:
+      - server/.env.production
+    command: npm run db:migrate
+    restart: "no"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  backup:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: tools
+    env_file:
+      - server/.env.production
+    command: npm run db:backup
+    restart: "no"
+    volumes:
+      - ./server-data/backups:/app/server/server-data/backups
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

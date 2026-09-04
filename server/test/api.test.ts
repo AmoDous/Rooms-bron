@@ -31,6 +31,23 @@ test("health reports the active repository", async () => {
   assert.deepEqual(response.json().media, "memory");
   assert.deepEqual(response.json().rateLimits, "memory");
   assert.deepEqual(response.json().database, "down");
+  const ready = await app.inject({ method: "GET", url: "/ready" });
+  assert.equal(ready.statusCode, 200);
+  assert.equal(ready.json().status, "ready");
+  assert.equal(ready.headers["cache-control"], "no-store");
+});
+
+test("readiness fails closed when a required dependency is unavailable", async () => {
+  const unavailableApp = buildApp({ logger: false, readinessCheck: async () => false });
+  await unavailableApp.ready();
+  try {
+    const response = await unavailableApp.inject({ method: "GET", url: "/ready" });
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.json().status, "not_ready");
+    assert.doesNotMatch(response.body, /database|password|secret|connection/i);
+  } finally {
+    await unavailableApp.close();
+  }
 });
 
 test("operations health is admin-only and exposes aggregates without secrets", async () => {

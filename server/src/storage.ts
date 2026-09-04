@@ -53,6 +53,7 @@ export interface CatalogStorage {
   receiptRepository: FiscalReceiptRepository;
   refundRepository: RefundRepository;
   refundProvider: PaymentGateway | null;
+  check(): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -137,6 +138,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
       receiptRepository: new MemoryFiscalReceiptRepository(),
       refundRepository: new MemoryRefundRepository(),
       refundProvider: null,
+      check: async () => true,
       close: async () => undefined,
     };
   }
@@ -181,6 +183,14 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     receiptRepository: new PostgresFiscalReceiptRepository(pool),
     refundRepository: new PostgresRefundRepository(pool),
     refundProvider: paymentGateway,
+    check: async () => {
+      try {
+        await pool.query("select 1 as ready");
+        return true;
+      } catch {
+        return false;
+      }
+    },
     close: () => pool.end(),
   };
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.19.0
+  version: 0.20.0
   description: |
     Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
     the local Fastify service provides PostgreSQL-backed API endpoints.
@@ -40,6 +40,29 @@ paths:
                   rateLimits: {type: string, enum: [memory, postgresql]}
                   payments: {type: string, enum: [rooms_demo, sber]}
                   time: {type: string, format: date-time}
+
+  /ready:
+    get:
+      tags: [Public]
+      operationId: getReadiness
+      description: Checks live dependencies used to decide whether the instance can receive traffic. The response never exposes connection details.
+      responses:
+        '200':
+          description: The instance can receive traffic
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: A required dependency or production storage is unavailable
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
 
   /v1/cities:
     get:
@@ -2446,6 +2469,14 @@ components:
                     items: {$ref: '#/components/schemas/AvailabilityWindow'}
 
   schemas:
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, time]
+      properties:
+        status: {type: string, enum: [ready, not_ready]}
+        time: {type: string, format: date-time}
+
     City:
       type: object
       required: [id, name, active]

@@ -8,6 +8,9 @@ on:
       - "server/**"
       - "docs/migrations/**"
       - "docs/openapi.yaml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "compose.production.yml"
       - ".github/workflows/server-ci.yml"
   push:
     branches: [main]
@@ -17,6 +20,9 @@ on:
       - "server/**"
       - "docs/migrations/**"
       - "docs/openapi.yaml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "compose.production.yml"
       - ".github/workflows/server-ci.yml"
 
 permissions:
@@ -49,6 +55,8 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Build production container
+        run: docker build --target runtime -t rooms-api:ci ..
       - name: Install test browser
         run: npx playwright install --with-deps chromium
       - name: Browser journeys (desktop and mobile)

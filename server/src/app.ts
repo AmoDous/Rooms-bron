@@ -152,6 +152,7 @@ interface AppConfig {
   secureCookies: boolean;
   enableDemoPayments: boolean;
   exposePasswordResetToken: boolean;
+  readinessCheck: () => Promise<boolean>;
 }
 
 interface SearchQuery {
@@ -1016,6 +1017,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     secureCookies: overrides.secureCookies ?? false,
     enableDemoPayments: overrides.enableDemoPayments ?? true,
     exposePasswordResetToken: overrides.exposePasswordResetToken ?? false,
+    readinessCheck: overrides.readinessCheck ?? (async () => true),
   };
   const app = Fastify({ logger: config.logger });
   const operationsStartedAt = Date.now();
@@ -1777,6 +1779,22 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     payments: config.paymentRepository.provider,
     time: new Date().toISOString(),
   }));
+
+  app.get("/ready", async (_request, reply) => {
+    const dependenciesReady = await config.readinessCheck().catch(() => false);
+    const productionStorageReady = !config.productionMode || (
+      config.repository.storage === "postgresql"
+      && config.rateLimitRepository.storage === "postgresql"
+      && config.notificationRepository.storage === "postgresql"
+      && config.financeRepository.storage === "postgresql"
+      && config.photoStorage.storage === "s3"
+    );
+    const ready = dependenciesReady && productionStorageReady;
+    return reply
+      .status(ready ? 200 : 503)
+      .header("Cache-Control", "no-store")
+      .send({ status: ready ? "ready" : "not_ready", time: new Date().toISOString() });
+  });
 
   app.get("/v1/cities", async () => config.repository.listCities());
 

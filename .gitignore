@@ -16,5 +16,6 @@ server/.env
 server/.env.*
 !server/.env.example
 !server/.env.production.example
+server/.env.production
 server/server-data/
 server-data/
