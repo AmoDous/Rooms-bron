@@ -1460,6 +1460,80 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     return reply.status(404).send({ ...errorPayload("ROUTE_NOT_FOUND", "Маршрут API не найден."), requestId: request.id });
   });
 
+  const publicSiteBase = (request: FastifyRequest): URL => {
+    const requestOrigin = `${request.protocol}://${request.headers.host ?? "localhost"}`;
+    const siteUrl = config.productionMode ? config.publicSiteUrl : requestOrigin;
+    return new URL(siteUrl.endsWith("/") ? siteUrl : `${siteUrl}/`);
+  };
+  const escapeXml = (value: string): string => value.replace(/[&<>"']/gu, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&apos;",
+  })[character] ?? character);
+  const serializeJsonLd = (value: unknown): string => JSON.stringify(value).replace(/[<>&\u2028\u2029]/gu, (character) => ({
+    "<": "\\u003c",
+    ">": "\\u003e",
+    "&": "\\u0026",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+  })[character] ?? character);
+
+  app.get("/robots.txt", async (request, reply) => {
+    const baseUrl = publicSiteBase(request);
+    const body = config.productionMode
+      ? [
+          "User-agent: *",
+          "Allow: /",
+          "Disallow: /account",
+          "Disallow: /partner",
+          "Disallow: /admin",
+          "Disallow: /accounting",
+          `Sitemap: ${new URL("sitemap.xml", baseUrl).href}`,
+          "",
+        ].join("\n")
+      : "User-agent: *\nDisallow: /\n";
+    return reply.header("Cache-Control", "public, max-age=3600").type("text/plain; charset=utf-8").send(body);
+  });
+
+  app.get("/sitemap.xml", async (request, reply) => {
+    const baseUrl = publicSiteBase(request);
+    const venues = (await config.repository.listVenues())
+      .filter((venue) => venue.publicationStatus === "published" && venue.partnerMode === "catalog");
+    const cities = [...new Set(venues.map((venue) => venue.city))];
+    const rooms = (await Promise.all(cities.map((city) => config.repository.searchRooms({
+      city,
+      durationMinutes: 60,
+      features: [],
+      sort: "rating",
+    })))).flat();
+    const venueById = new Map(venues.map((venue) => [venue.id, venue]));
+    const entries = [
+      { path: "", priority: "1.0", changefreq: "daily" },
+      { path: "catalog", priority: "0.9", changefreq: "daily" },
+      { path: "for-partners", priority: "0.5", changefreq: "monthly" },
+      ...venues.map((venue) => ({ path: `venues/${encodeURIComponent(venue.slug)}`, priority: "0.8", changefreq: "weekly" })),
+      ...rooms.flatMap((room) => {
+        const venue = venueById.get(room.venueId);
+        return venue ? [{
+          path: `venues/${encodeURIComponent(venue.slug)}/rooms/${encodeURIComponent(room.slug)}`,
+          priority: "0.8",
+          changefreq: "daily",
+        }] : [];
+      }),
+    ];
+    const urls = entries.map((entry) => [
+      "  <url>",
+      `    <loc>${escapeXml(new URL(entry.path, baseUrl).href)}</loc>`,
+      `    <changefreq>${entry.changefreq}</changefreq>`,
+      `    <priority>${entry.priority}</priority>`,
+      "  </url>",
+    ].join("\n")).join("\n");
+    const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
+    return reply.header("Cache-Control", "public, max-age=900").type("application/xml; charset=utf-8").send(body);
+  });
+
   const servePublicSite = async (request: FastifyRequest, reply: FastifyReply) => {
     const source = await readFile(resolve(projectRoot, "index.html"), "utf8");
     const params = request.params as { venueSlug?: string; roomSlug?: string };
@@ -1498,6 +1572,26 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       "</head>",
       `<script data-rooms-runtime>window.ROOMS_CONFIG=Object.freeze(${runtimeConfig});</script>\n</head>`,
     );
+    if (publicPath === "/") {
+      const canonical = publicSiteBase(request).href;
+      const structuredData = {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        name: "Rooms",
+        url: canonical,
+        description: "Сервис поиска и бронирования приватных помещений для событий.",
+        inLanguage: "ru-RU",
+        potentialAction: {
+          "@type": "SearchAction",
+          target: `${new URL("catalog", canonical).href}?city={city}`,
+          "query-input": "required name=city",
+        },
+      };
+      html = html.replace(
+        "</head>",
+        `<meta property="og:url" content="${escapeHtml(canonical)}">\n<link rel="canonical" href="${escapeHtml(canonical)}">\n<script type="application/ld+json" data-rooms-structured>${serializeJsonLd(structuredData)}</script>\n</head>`,
+      );
+    }
     if (privateRoute) {
       html = html
         .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(privateRoute.title)}</title>`)
@@ -1541,12 +1635,13 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       const publicRoom = room?.publicationStatus === "published" && room.venueId === publicVenue?.id ? room : null;
       routeFound = Boolean(publicVenue && (!roomSlug || publicRoom));
       if (publicVenue && routeFound) {
-        const representative = publicRoom ?? (await config.repository.searchRooms({
+        const venueRooms = (await config.repository.searchRooms({
           city: publicVenue.city,
           durationMinutes: 60,
           features: [],
           sort: "rating",
-        })).find((item) => item.venueId === publicVenue.id) ?? null;
+        })).filter((item) => item.venueId === publicVenue.id);
+        const representative = publicRoom ?? venueRooms[0] ?? null;
         const title = publicRoom
           ? `${publicRoom.title} в ${publicVenue.title} — Rooms`
           : `${publicVenue.title} — помещения для бронирования в ${publicVenue.city} | Rooms`;
@@ -1556,12 +1651,61 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
         const baseUrl = new URL(canonicalSiteUrl.endsWith("/") ? canonicalSiteUrl : `${canonicalSiteUrl}/`);
         const canonical = new URL(`venues/${encodeURIComponent(publicVenue.slug)}${publicRoom ? `/rooms/${encodeURIComponent(publicRoom.slug)}` : ""}`, baseUrl).href;
         const image = representative?.photoPaths[0] ? photoUrl(config.publicSiteUrl, config.publicApiUrl, representative.photoPaths[0]) : "";
+        const venueUrl = new URL(`venues/${encodeURIComponent(publicVenue.slug)}`, baseUrl).href;
+        const address = {
+          "@type": "PostalAddress",
+          streetAddress: publicVenue.address,
+          addressLocality: publicVenue.city,
+          addressCountry: "RU",
+        };
+        const structuredData = publicRoom ? {
+          "@context": "https://schema.org",
+          "@type": "EventVenue",
+          "@id": `${canonical}#room`,
+          name: `${publicRoom.title} — ${publicVenue.title}`,
+          url: canonical,
+          description,
+          image: publicRoom.photoPaths.map((path) => photoUrl(config.publicSiteUrl, config.publicApiUrl, path)),
+          address,
+          maximumAttendeeCapacity: publicRoom.capacityMax,
+          isContainedInPlace: { "@type": "EventVenue", name: publicVenue.title, url: venueUrl },
+          aggregateRating: publicRoom.reviewCount > 0 ? {
+            "@type": "AggregateRating",
+            ratingValue: publicRoom.rating,
+            reviewCount: publicRoom.reviewCount,
+            bestRating: 5,
+          } : undefined,
+          offers: {
+            "@type": "Offer",
+            price: publicRoom.pricePerHour,
+            priceCurrency: "RUB",
+            unitText: "HOUR",
+            availability: "https://schema.org/InStock",
+            url: canonical,
+          },
+        } : {
+          "@context": "https://schema.org",
+          "@type": "EventVenue",
+          "@id": `${canonical}#venue`,
+          name: publicVenue.title,
+          url: canonical,
+          description,
+          image: image || undefined,
+          address,
+          amenityFeature: publicVenue.amenities.map((name) => ({ "@type": "LocationFeatureSpecification", name, value: true })),
+          containsPlace: venueRooms.map((room) => ({
+            "@type": "EventVenue",
+            name: room.title,
+            url: new URL(`venues/${encodeURIComponent(publicVenue.slug)}/rooms/${encodeURIComponent(room.slug)}`, baseUrl).href,
+            maximumAttendeeCapacity: room.capacityMax,
+          })),
+        };
         html = html
           .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(title)}</title>`)
           .replace(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${escapeHtml(description)}">`)
           .replace(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${escapeHtml(title)}">`)
           .replace(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${escapeHtml(description)}">`)
-          .replace("</head>", `${image ? `<meta property="og:image" content="${escapeHtml(image)}">\n` : ""}<meta property="og:url" content="${escapeHtml(canonical)}">\n<link rel="canonical" href="${escapeHtml(canonical)}">\n</head>`);
+          .replace("</head>", `${image ? `<meta property="og:image" content="${escapeHtml(image)}">\n` : ""}<meta property="og:url" content="${escapeHtml(canonical)}">\n<link rel="canonical" href="${escapeHtml(canonical)}">\n<script type="application/ld+json" data-rooms-structured>${serializeJsonLd(structuredData)}</script>\n</head>`);
       }
     }
     html = html.replace("</head>", '<base href="/">\n<meta name="rooms-routing" content="path">\n</head>');

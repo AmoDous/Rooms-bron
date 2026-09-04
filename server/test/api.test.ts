@@ -89,10 +89,17 @@ test("local preview serves the current site and its room photography", async () 
   assert.match(page.headers["content-type"] ?? "", /text\/html/);
   assert.match(page.body, /Rooms/);
   assert.match(page.body, /window\.ROOMS_CONFIG=Object\.freeze\(\{"mode":"development","apiBase":"http:\/\/127\.0\.0\.1:3001"\}\)/u);
+  assert.match(page.body, /<link rel="canonical" href="http:\/\/localhost(?::80)?\/">/);
+  const homeStructured = JSON.parse(page.body.match(/<script type="application\/ld\+json" data-rooms-structured>([^<]+)<\/script>/u)?.[1] ?? "null");
+  assert.equal(homeStructured["@type"], "WebSite");
   const venuePage = await app.inject({ method: "GET", url: "/venues/kids-loft" });
   assert.equal(venuePage.statusCode, 200);
   assert.match(venuePage.headers["content-type"] ?? "", /text\/html/);
   assert.match(venuePage.body, /function venueRouteState/);
+  const venueStructured = JSON.parse(venuePage.body.match(/<script type="application\/ld\+json" data-rooms-structured>([^<]+)<\/script>/u)?.[1] ?? "null");
+  assert.equal(venueStructured["@type"], "EventVenue");
+  assert.equal(venueStructured.name, "Kids Loft");
+  assert.equal(venueStructured.containsPlace.length, 2);
   const catalogPage = await app.inject({ method: "GET", url: "/catalog?city=%D0%92%D0%BE%D1%80%D0%BE%D0%BD%D0%B5%D0%B6&guests=12" });
   assert.equal(catalogPage.statusCode, 200);
   assert.match(catalogPage.body, /<title>Каталог помещений — Rooms<\/title>/);
@@ -127,6 +134,12 @@ test("local preview serves the current site and its room photography", async () 
   assert.match(roomPage.body, /<title>Комната Космос в Kids Loft — Rooms<\/title>/);
   assert.match(roomPage.body, /<meta property="og:image" content="https:\/\/amodous\.github\.io\/Rooms-bron\/assets\/kids-loft\.jpg">/);
   assert.match(roomPage.body, /<link rel="canonical" href="http:\/\/localhost(?::80)?\/venues\/kids-loft\/rooms\/kosmos">/);
+  const roomStructured = JSON.parse(roomPage.body.match(/<script type="application\/ld\+json" data-rooms-structured>([^<]+)<\/script>/u)?.[1] ?? "null");
+  assert.equal(roomStructured["@type"], "EventVenue");
+  assert.equal(roomStructured.maximumAttendeeCapacity, 14);
+  assert.equal(roomStructured.offers.price, 1600);
+  assert.equal(roomStructured.offers.priceCurrency, "RUB");
+  assert.equal(roomStructured.aggregateRating.reviewCount, 42);
   const unknownVenue = await app.inject({ method: "GET", url: "/venues/not-a-real-venue" });
   assert.equal(unknownVenue.statusCode, 404);
   assert.match(unknownVenue.headers["content-type"] ?? "", /text\/html/);
@@ -134,6 +147,17 @@ test("local preview serves the current site and its room photography", async () 
   assert.equal(photo.statusCode, 200);
   assert.match(photo.headers["content-type"] ?? "", /image\/jpeg/);
   assert.ok(photo.rawPayload.length > 1000);
+
+  const robots = await app.inject({ method: "GET", url: "/robots.txt" });
+  assert.equal(robots.statusCode, 200);
+  assert.match(robots.headers["content-type"] ?? "", /text\/plain/);
+  assert.equal(robots.body, "User-agent: *\nDisallow: /\n");
+  const sitemap = await app.inject({ method: "GET", url: "/sitemap.xml" });
+  assert.equal(sitemap.statusCode, 200);
+  assert.match(sitemap.headers["content-type"] ?? "", /application\/xml/);
+  assert.match(sitemap.body, /<loc>http:\/\/localhost(?::80)?\/catalog<\/loc>/);
+  assert.match(sitemap.body, /<loc>http:\/\/localhost(?::80)?\/venues\/kids-loft\/rooms\/kosmos<\/loc>/);
+  assert.doesNotMatch(sitemap.body, /\/account(?:ing)?<\/loc>|\/admin<\/loc>|\/partner<\/loc>/);
 });
 
 test("production responses include defensive headers and auth responses are not cached", async () => {
@@ -154,6 +178,10 @@ test("production responses include defensive headers and auth responses are not 
 
     const page = await productionApp.inject({ method: "GET", url: "/" });
     assert.match(page.body, /window\.ROOMS_CONFIG=Object\.freeze\(\{"mode":"production","apiBase":"https:\/\/api\.rooms\.test"\}\)/u);
+    const robots = await productionApp.inject({ method: "GET", url: "/robots.txt" });
+    assert.match(robots.body, /Allow: \//);
+    assert.match(robots.body, /Disallow: \/admin/);
+    assert.match(robots.body, /Sitemap: https:\/\/amodous\.github\.io\/Rooms-bron\/sitemap\.xml/);
 
     const login = await productionApp.inject({
       method: "POST",
