@@ -1402,6 +1402,9 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
+    reply.header("X-Permitted-Cross-Domain-Policies", "none");
+    reply.header("Cross-Origin-Opener-Policy", "same-origin");
+    reply.header("Origin-Agent-Cluster", "?1");
     reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     if (config.productionMode) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -1711,6 +1714,28 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       }
     }
     html = html.replace("</head>", '<base href="/">\n<meta name="rooms-routing" content="path">\n</head>');
+    if (config.productionMode) {
+      const nonce = randomBytes(18).toString("base64");
+      html = html
+        .replace(/<(script|style)(?=[\s>])/gu, `<$1 nonce="${nonce}"`)
+        .replace('id="demoDataWarning"', 'id="demoDataWarning" hidden');
+      const apiOrigin = new URL(config.publicApiUrl).origin;
+      reply.header("Content-Security-Policy", [
+        "default-src 'self'",
+        `script-src 'self' 'nonce-${nonce}'`,
+        `style-src-elem 'self' 'nonce-${nonce}'`,
+        "style-src-attr 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        `connect-src 'self' ${apiOrigin}`,
+        "frame-src https://yandex.ru",
+        "font-src 'self' data:",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "upgrade-insecure-requests",
+      ].join("; "));
+    }
     return reply.status(routeFound ? 200 : 404).header("Cache-Control", "no-store").type("text/html; charset=utf-8").send(html);
   };
   const publicSlugSchema = {

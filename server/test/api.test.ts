@@ -189,12 +189,24 @@ test("production responses include defensive headers and auth responses are not 
     const health = await productionApp.inject({ method: "GET", url: "/health" });
     assert.equal(health.headers["x-content-type-options"], "nosniff");
     assert.equal(health.headers["x-frame-options"], "DENY");
+    assert.equal(health.headers["x-permitted-cross-domain-policies"], "none");
+    assert.equal(health.headers["cross-origin-opener-policy"], "same-origin");
+    assert.equal(health.headers["origin-agent-cluster"], "?1");
     assert.equal(health.headers["referrer-policy"], "strict-origin-when-cross-origin");
     assert.equal(health.headers["permissions-policy"], "camera=(), microphone=(), geolocation=()");
     assert.equal(health.headers["strict-transport-security"], "max-age=31536000; includeSubDomains");
 
     const page = await productionApp.inject({ method: "GET", url: "/" });
     assert.match(page.body, /window\.ROOMS_CONFIG=Object\.freeze\(\{"mode":"production","apiBase":"https:\/\/api\.rooms\.test"\}\)/u);
+    const policy = page.headers["content-security-policy"] ?? "";
+    const nonce = policy.match(/script-src 'self' 'nonce-([^']+)'/u)?.[1];
+    assert.ok(nonce);
+    assert.match(policy, /object-src 'none'/u);
+    assert.match(policy, /frame-ancestors 'none'/u);
+    assert.doesNotMatch(page.body, /id="demoDataWarning"(?! hidden)/u);
+    assert.doesNotMatch(page.body, /<(?:script|style)(?! nonce=)/u);
+    assert.match(page.body, /data-rooms-runtime/u);
+    assert.ok(page.body.includes(`nonce="${nonce}"`));
     const robots = await productionApp.inject({ method: "GET", url: "/robots.txt" });
     assert.match(robots.body, /Allow: \//);
     assert.match(robots.body, /Disallow: \/admin/);

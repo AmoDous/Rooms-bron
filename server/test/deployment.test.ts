@@ -19,6 +19,7 @@ function productionEnv(): NodeJS.ProcessEnv {
     SMTP_URL: "smtps://account:private-smtp-password@mail.test:465", EMAIL_FROM: "Rooms <noreply@rooms.test>",
     PAYMENT_PROVIDER: "sber", SBER_API_BASE_URL: "https://bank.test/payment/rest",
     SBER_USERNAME: "private-bank-user", SBER_PASSWORD: "private-bank-password",
+    LEGAL_DOCUMENTS_APPROVED: "true", PD_OPERATOR_NOTIFIED: "true", PD_DATA_LOCALIZED_RU: "true",
   };
 }
 
@@ -43,6 +44,15 @@ test("production safety rejects insecure and misspelled flags", () => {
     NOTIFICATION_DELIVERY_MODE: "log" })) {
     assert.throws(() => assertProductionSafety({ ...productionEnv(), [key]: setting }), new RegExp(key));
     assert.throws(() => assertProductionSafety({ ...productionEnv(), [key]: "typo" }), new RegExp(key));
+  }
+});
+
+test("production safety requires explicit legal and personal-data readiness", () => {
+  for (const key of ["LEGAL_DOCUMENTS_APPROVED", "PD_OPERATOR_NOTIFIED", "PD_DATA_LOCALIZED_RU"]) {
+    assert.throws(() => assertProductionSafety({ ...productionEnv(), [key]: "false" }), new RegExp(key));
+    const env = productionEnv();
+    delete env[key];
+    assert.throws(() => assertProductionSafety(env), new RegExp(key));
   }
 });
 

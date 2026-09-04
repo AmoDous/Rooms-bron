@@ -7,6 +7,7 @@ export interface DeploymentCheck {
 const value = (env: NodeJS.ProcessEnv, key: string) => env[key]?.trim() || "";
 const flag = (env: NodeJS.ProcessEnv, key: string, expected: boolean) =>
   env[key] === undefined || value(env, key).toLowerCase() === String(expected);
+const requiredFlag = (env: NodeJS.ProcessEnv, key: string) => value(env, key).toLowerCase() === "true";
 
 function url(raw: string): URL | null {
   try { return new URL(raw); } catch { return null; }
@@ -53,6 +54,12 @@ export function productionSafetyChecks(env: NodeJS.ProcessEnv): DeploymentCheck[
       "Production photos require S3_BUCKET, S3_REGION, HTTPS S3_ENDPOINT when supplied, and paired S3 credentials (or an infrastructure role)."),
     check("notification-mode", (value(env, "NOTIFICATION_DELIVERY_MODE").toLowerCase() || "live") === "live",
       "NOTIFICATION_DELIVERY_MODE must be live or omitted in production; log mode does not deliver messages."),
+    check("legal-documents", requiredFlag(env, "LEGAL_DOCUMENTS_APPROVED"),
+      "LEGAL_DOCUMENTS_APPROVED must be true only after the final offer, privacy policy and separate consents have been approved for the registered operator."),
+    check("personal-data-notice", requiredFlag(env, "PD_OPERATOR_NOTIFIED"),
+      "PD_OPERATOR_NOTIFIED must be true only after the operator has submitted the required personal-data processing notice."),
+    check("personal-data-localization", requiredFlag(env, "PD_DATA_LOCALIZED_RU"),
+      "PD_DATA_LOCALIZED_RU must be true only after the primary databases and storage for Russian users have been verified as located in Russia."),
   ];
 }
 
