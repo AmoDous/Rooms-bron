@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.20.0
+  version: 0.21.0
   description: |
     Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
     the local Fastify service provides PostgreSQL-backed API endpoints.
@@ -598,6 +598,63 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/me/data-export:
+    get:
+      tags: [Client]
+      operationId: exportCurrentUserPersonalData
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Portable JSON archive of personal data visible to the authenticated client
+          headers:
+            Content-Disposition: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PersonalDataExport'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/me/personal-data-requests:
+    get:
+      tags: [Client]
+      operationId: listCurrentUserPersonalDataRequests
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Requests submitted by the current client
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/PersonalDataRequest'}}
+    post:
+      tags: [Client]
+      operationId: createCurrentUserPersonalDataRequest
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonalDataRequestCreate'}
+      responses:
+        '202':
+          description: Request accepted or existing active request returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PersonalDataRequest'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Too many incorrect password confirmations
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 
   /v1/me/notification-settings:
     get:
@@ -1912,6 +1969,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/admin/personal-data-requests:
+    get:
+      tags: [Admin]
+      operationId: listAdminPersonalDataRequests
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [new, processing, completed, rejected, all], default: all}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Due-date ordered personal-data request queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/PersonalDataRequest'}}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/personal-data-requests/{requestId}:
+    patch:
+      tags: [Admin]
+      operationId: decidePersonalDataRequest
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: requestId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonalDataRequestDecision'}
+      responses:
+        '200':
+          description: Updated request
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PersonalDataRequest'}
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/admin/two-factor-recovery:
     get:
       tags: [Admin]
@@ -2789,6 +2890,68 @@ components:
         createdAt: {type: string, format: date-time}
         lastSeenAt: {type: string, format: date-time}
         current: {type: boolean}
+
+    PersonalDataConsent:
+      type: object
+      additionalProperties: false
+      required: [id, context, documents, documentVersion, acceptedAt, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        context: {type: string}
+        documents: {type: array, items: {type: string}}
+        documentVersion: {type: string}
+        acceptedAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+
+    PersonalDataRequest:
+      type: object
+      additionalProperties: false
+      required: [id, userId, type, status, message, resolution, dueAt, assignedTo, resolvedAt, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        userId: {type: string, format: uuid}
+        type: {type: string, enum: [access, rectification, restriction, consent_withdrawal, erasure]}
+        status: {type: string, enum: [new, processing, completed, rejected]}
+        message: {type: string}
+        resolution: {type: [string, 'null']}
+        dueAt: {type: string, format: date-time}
+        assignedTo: {type: [string, 'null'], format: uuid}
+        resolvedAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+
+    PersonalDataRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [type, currentPassword]
+      properties:
+        type: {type: string, enum: [access, rectification, restriction, consent_withdrawal, erasure]}
+        message: {type: string, maxLength: 2000}
+        currentPassword: {type: string, writeOnly: true, minLength: 1, maxLength: 128}
+
+    PersonalDataRequestDecision:
+      type: object
+      additionalProperties: false
+      required: [status, resolution]
+      properties:
+        status: {type: string, enum: [processing, completed, rejected]}
+        resolution: {type: string, minLength: 3, maxLength: 4000}
+
+    PersonalDataExport:
+      type: object
+      required: [format, generatedAt, user, bookings, reviews, supportCases, notificationSettings, notificationDeliveries, sessions, consents, requests]
+      properties:
+        format: {type: string, const: rooms-personal-data-export-v1}
+        generatedAt: {type: string, format: date-time}
+        user: {$ref: '#/components/schemas/User'}
+        bookings: {type: array, items: {$ref: '#/components/schemas/Booking'}}
+        reviews: {type: array, items: {$ref: '#/components/schemas/ReviewRecord'}}
+        supportCases: {type: array, items: {$ref: '#/components/schemas/SupportCase'}}
+        notificationSettings: {$ref: '#/components/schemas/NotificationSettings'}
+        notificationDeliveries: {type: array, items: {$ref: '#/components/schemas/NotificationDelivery'}}
+        sessions: {type: array, items: {$ref: '#/components/schemas/UserSession'}}
+        consents: {type: array, items: {$ref: '#/components/schemas/PersonalDataConsent'}}
+        requests: {type: array, items: {$ref: '#/components/schemas/PersonalDataRequest'}}
 
     ClientRegistration:
       type: object

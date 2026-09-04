@@ -108,6 +108,14 @@ import {
   MemoryRateLimitRepository,
   type RateLimitRepository,
 } from "./rateLimits.js";
+import {
+  MemoryDataRightsRepository,
+  type DataRightsRepository,
+  type PersonalDataRequestQueryStatus,
+  type PersonalDataRequestRecord,
+  type PersonalDataRequestStatus,
+  type PersonalDataRequestType,
+} from "./dataRights.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
 import { planBooking, roomPriceForBooking } from "./planning.js";
 import type {
@@ -141,6 +149,7 @@ interface AppConfig {
   financeRepository: FinanceRepository;
   receiptRepository: FiscalReceiptRepository;
   refundRepository: RefundRepository;
+  dataRightsRepository: DataRightsRepository;
   photoStorage: PhotoStorage;
   backupStatusFile: string | null;
   authTokenSecret: string;
@@ -261,6 +270,31 @@ interface ClientProfileBody {
   city: string;
   currentPassword?: string;
   newPassword?: string;
+}
+
+interface PersonalDataRequestBody {
+  type: PersonalDataRequestType;
+  message?: string;
+  currentPassword: string;
+}
+
+interface PersonalDataRequestQuerystring {
+  status?: PersonalDataRequestQueryStatus;
+  limit?: number;
+}
+
+interface PersonalDataRequestParams {
+  requestId: string;
+}
+
+interface PersonalDataRequestDecisionBody {
+  status: Exclude<PersonalDataRequestStatus, "new">;
+  resolution: string;
+}
+
+function personalDataRequestForUser(record: PersonalDataRequestRecord) {
+  const { assignedTo: _assignedTo, ...publicRecord } = record;
+  return publicRecord;
 }
 
 interface NotificationSettingsBody {
@@ -985,6 +1019,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   const financeRepository = overrides.financeRepository ?? new MemoryFinanceRepository(bookingRepository, supportRepository);
   const receiptRepository = overrides.receiptRepository ?? new MemoryFiscalReceiptRepository();
   const refundRepository = overrides.refundRepository ?? new MemoryRefundRepository();
+  const dataRightsRepository = overrides.dataRightsRepository ?? new MemoryDataRightsRepository();
   const config: AppConfig = {
     publicSiteUrl: overrides.publicSiteUrl ?? "https://amodous.github.io/Rooms-bron",
     publicApiUrl: overrides.publicApiUrl ?? "http://127.0.0.1:3001",
@@ -1006,6 +1041,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     financeRepository,
     receiptRepository,
     refundRepository,
+    dataRightsRepository,
     photoStorage: overrides.photoStorage ?? new MemoryPhotoStorage(),
     backupStatusFile: overrides.backupStatusFile ?? null,
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
@@ -1101,6 +1137,13 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     config.rateLimitHashKey,
     3,
     60 * 60 * 1000,
+  );
+  const dataRightsPasswordAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "data_rights_password",
+    config.rateLimitHashKey,
+    5,
+    15 * 60 * 1000,
   );
 
   const queueNotification = async (label: string, task: () => Promise<unknown>): Promise<void> => {
@@ -2400,6 +2443,109 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (!updated) throw new ApiError(401, "CURRENT_PASSWORD_INVALID", "Текущий пароль не подходит.");
     await rememberNotificationUser(updated);
     return updated;
+  });
+
+  app.get("/v1/me/data-export", async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    const [bookings, reviews, supportCases, notificationSettings, notificationDeliveries, sessions, consents, requests] = await Promise.all([
+      config.bookingRepository.listByClient(current.user.id, "all"),
+      config.reviewRepository.listByClient(current.user.id),
+      config.supportRepository.list(current.user.id, "client", "all", 200),
+      notifications.getSettings(current.user),
+      notifications.listForUser(current.user.id, { limit: 200 }),
+      auth.listSessions(current.user.id, current.sessionId),
+      config.dataRightsRepository.listConsents(current.user.id),
+      config.dataRightsRepository.listForUser(current.user.id),
+    ]);
+    const generatedAt = new Date().toISOString();
+    reply.header("Cache-Control", "no-store");
+    reply.header("Content-Disposition", `attachment; filename="rooms-personal-data-${generatedAt.slice(0, 10)}.json"`);
+    return {
+      format: "rooms-personal-data-export-v1",
+      generatedAt,
+      user: current.user,
+      bookings,
+      reviews,
+      supportCases,
+      notificationSettings,
+      notificationDeliveries,
+      sessions,
+      consents,
+      requests: requests.map(personalDataRequestForUser),
+    };
+  });
+
+  app.get("/v1/me/personal-data-requests", async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    return { items: (await config.dataRightsRepository.listForUser(current.user.id)).map(personalDataRequestForUser) };
+  });
+
+  app.post<{ Body: PersonalDataRequestBody }>("/v1/me/personal-data-requests", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "currentPassword"],
+        properties: {
+          type: { type: "string", enum: ["access", "rectification", "restriction", "consent_withdrawal", "erasure"] },
+          message: { type: "string", maxLength: 2000 },
+          currentPassword: { type: "string", minLength: 1, maxLength: 128 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current || current.user.role !== "client") throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет клиента.");
+    const attemptKey = current.user.id;
+    if (await dataRightsPasswordAttempts.blocked(attemptKey)) {
+      throw new ApiError(429, "TOO_MANY_ATTEMPTS", "Слишком много неверных попыток. Повторите позже.");
+    }
+    if (!await auth.verifyUserPassword(current.user.id, request.body.currentPassword)) {
+      await dataRightsPasswordAttempts.fail(attemptKey);
+      throw new ApiError(401, "CURRENT_PASSWORD_INVALID", "Текущий пароль не подходит.");
+    }
+    await dataRightsPasswordAttempts.clear(attemptKey);
+    const record = await config.dataRightsRepository.create(current.user.id, request.body.type, request.body.message?.trim() ?? "");
+    return reply.code(202).send(personalDataRequestForUser(record));
+  });
+
+  app.get<{ Querystring: PersonalDataRequestQuerystring }>("/v1/admin/personal-data-requests", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["new", "processing", "completed", "rejected", "all"], default: "all" },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 100 },
+        },
+      },
+    },
+  }, async (request) => {
+    await requireAdmin(request.headers.authorization);
+    return { items: await config.dataRightsRepository.listAdmin(request.query.status ?? "all", request.query.limit ?? 100) };
+  });
+
+  app.patch<{ Params: PersonalDataRequestParams; Body: PersonalDataRequestDecisionBody }>("/v1/admin/personal-data-requests/:requestId", {
+    schema: {
+      params: {
+        type: "object", additionalProperties: false, required: ["requestId"],
+        properties: { requestId: { type: "string", pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$" } },
+      },
+      body: {
+        type: "object", additionalProperties: false, required: ["status", "resolution"],
+        properties: {
+          status: { type: "string", enum: ["processing", "completed", "rejected"] },
+          resolution: { type: "string", minLength: 3, maxLength: 4000 },
+        },
+      },
+    },
+  }, async (request) => {
+    const admin = await requireAdmin(request.headers.authorization);
+    const record = await config.dataRightsRepository.decide(admin.id, request.params.requestId, request.body.status, request.body.resolution.trim());
+    if (!record) throw new ApiError(404, "PERSONAL_DATA_REQUEST_NOT_FOUND", "Запрос по персональным данным не найден.");
+    return record;
   });
 
   app.get<{ Querystring: BookingQuery }>("/v1/bookings", {

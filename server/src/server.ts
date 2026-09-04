@@ -126,6 +126,7 @@ const app = buildApp({
   financeRepository: storage.financeRepository,
   receiptRepository: storage.receiptRepository,
   refundRepository: storage.refundRepository,
+  dataRightsRepository: storage.dataRightsRepository,
   photoStorage,
   backupStatusFile,
   authTokenSecret: effectiveAuthTokenSecret,

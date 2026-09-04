@@ -812,6 +812,12 @@ export class AuthService {
     return this.repository.revokeAllSessions(userId, revokedAt);
   }
 
+  async verifyUserPassword(userId: string, password: string): Promise<boolean> {
+    const user = await this.repository.findUserById(userId);
+    if (!user || user.blockedAt !== null || !user.passwordHash) return false;
+    return verifyPassword(password, user.passwordHash);
+  }
+
   async updateClientProfile(userId: string, sessionId: string, input: ClientProfileChange): Promise<PublicUser | null> {
     const current = await this.repository.findUserById(userId);
     if (!current || current.role !== "client" || current.blockedAt !== null) return null;

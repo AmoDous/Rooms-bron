@@ -33,7 +33,7 @@ test("shared migration manifest includes every SQL update and preserves raw chec
   const files = (await readdir(new URL("../../docs/migrations/", import.meta.url))).filter((name) => name.endsWith(".sql")).sort();
   assert.deepEqual(files, migrationNames.slice(1).map((name) => `${name}.sql`));
   const migrations = await loadMigrations();
-  assert.equal(migrations.length, 20);
+  assert.equal(migrations.length, 21);
   assert.equal(new Set(migrations.map((item) => item.name)).size, migrations.length);
   for (const item of migrations) {
     assert.match(item.checksum, /^[a-f0-9]{64}$/);
@@ -109,7 +109,7 @@ test("startup schema check accepts the current database without writes", async (
 test("startup schema check rejects an outdated database with an actionable error", async () => {
   const sql = new FakeSql();
   sql.rows = (await loadMigrations()).slice(0, -1);
-  await assert.rejects(assertDatabaseSchema(sql), /0020_room_price_rules.*npm run db:migrate/);
+  await assert.rejects(assertDatabaseSchema(sql), /0021_personal_data_requests.*npm run db:migrate/);
   sql.rows.push({ name: "9999_future", checksum: "future" });
   await assert.rejects(assertDatabaseSchema(sql), /history is incompatible/);
 });

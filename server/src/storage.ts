@@ -34,6 +34,7 @@ import {
   PostgresRateLimitRepository,
   type RateLimitRepository,
 } from "./rateLimits.js";
+import { MemoryDataRightsRepository, PostgresDataRightsRepository, type DataRightsRepository } from "./dataRights.js";
 
 export interface CatalogStorage {
   repository: CatalogRepository;
@@ -52,6 +53,7 @@ export interface CatalogStorage {
   financeRepository: FinanceRepository;
   receiptRepository: FiscalReceiptRepository;
   refundRepository: RefundRepository;
+  dataRightsRepository: DataRightsRepository;
   refundProvider: PaymentGateway | null;
   check(): Promise<boolean>;
   close(): Promise<void>;
@@ -137,6 +139,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
       financeRepository: new MemoryFinanceRepository(bookingRepository, supportRepository),
       receiptRepository: new MemoryFiscalReceiptRepository(),
       refundRepository: new MemoryRefundRepository(),
+      dataRightsRepository: new MemoryDataRightsRepository(),
       refundProvider: null,
       check: async () => true,
       close: async () => undefined,
@@ -182,6 +185,7 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     financeRepository: new PostgresFinanceRepository(pool, new FinanceCipher(financeEncryptionKey)),
     receiptRepository: new PostgresFiscalReceiptRepository(pool),
     refundRepository: new PostgresRefundRepository(pool),
+    dataRightsRepository: new PostgresDataRightsRepository(pool),
     refundProvider: paymentGateway,
     check: async () => {
       try {

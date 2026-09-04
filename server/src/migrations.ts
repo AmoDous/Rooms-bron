@@ -9,6 +9,7 @@ export const migrationNames = [
   "0012_fiscal_receipt_worker", "0013_automatic_refund_worker", "0014_partner_leads", "0015_partner_invitations",
   "0016_partner_invitation_retention", "0017_two_factor_auth", "0018_two_factor_recovery",
   "0019_auth_rate_limits", "0020_room_price_rules",
+  "0021_personal_data_requests",
 ] as const;
 
 export interface Migration { name: string; sql: string; checksum: string }
