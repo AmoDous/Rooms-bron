@@ -1,0 +1,2 @@
+request_code,venue_code,room_codes,event_date,preferred_start,duration_minutes,guest_count,request_source,created_at,first_response_at,exact_start_available,offered_start,offered_duration_minutes,alternative_accepted,final_status,decline_reason_category,confirmed_at,selected_start,selected_duration_minutes,actual_visit
+Q0001,V001,R001,2026-09-15,18:00,180,8,phone,2026-09-01T12:00:00+03:00,2026-09-01T12:08:00+03:00,false,19:00,180,true,confirmed,,2026-09-01T12:12:00+03:00,19:00,180,unknown

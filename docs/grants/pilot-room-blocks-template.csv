@@ -1,0 +1,2 @@
+block_code,venue_code,room_code,event_date,starts_at,duration_minutes,block_type,recorded_at,released_at
+B0001,V001,R001,2026-09-15,16:00,120,confirmed,2026-09-01T11:30:00+03:00,

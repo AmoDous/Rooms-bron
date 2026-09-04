@@ -583,6 +583,31 @@ export class NotificationService {
     return delivery ? [publicNotificationDelivery(delivery)] : [];
   }
 
+  async enqueuePartnerInvitation(input: {
+    invitationId: string;
+    contactName: string;
+    contactEmail: string;
+    venueTitle: string;
+    activationUrl: string;
+    expiresAt: string;
+  }): Promise<PublicNotificationDelivery[]> {
+    const expires = new Date(input.expiresAt).toLocaleString("ru-RU", {
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "Europe/Moscow",
+    });
+    const event: EnqueueEvent = {
+      eventKey: "partner_invitation_created",
+      title: `Доступ к кабинету ${input.venueTitle} в Rooms`,
+      body: `Здравствуйте, ${input.contactName}.\n\nRooms проверил заявку площадки «${input.venueTitle}». Создайте личный пароль и активируйте кабинет по ссылке:\n${input.activationUrl}\n\nСсылка действует до ${expires} по московскому времени и сработает только один раз. Если вы не подавали заявку, сообщите об этом поддержке Rooms.`,
+      dedupeKey: `partner-invitation|${input.invitationId}`,
+    };
+    const delivery = await this.enqueueExternalEmail(input.contactEmail, event);
+    return delivery ? [publicNotificationDelivery(delivery)] : [];
+  }
+
   async enqueueUser(user: NotificationIdentity, event: EnqueueEvent): Promise<PublicNotificationDelivery[]> {
     await this.repository.rememberUser(user);
     const settings = await this.repository.getSettings(user);
@@ -642,6 +667,22 @@ export class NotificationService {
       target,
       eventKey: event.eventKey,
       dedupeKey: `${recipient.id}|${channel}|${event.dedupeKey}`,
+      title: event.title,
+      body: this.cipher.encrypt(event.body),
+      createdAt,
+    });
+  }
+
+  private enqueueExternalEmail(target: string, event: EnqueueEvent): Promise<NotificationDeliveryRecord | null> {
+    const createdAt = new Date().toISOString();
+    return this.repository.enqueue({
+      id: randomUUID(),
+      userId: null,
+      venueId: null,
+      channel: "email",
+      target,
+      eventKey: event.eventKey,
+      dedupeKey: `external|email|${event.dedupeKey}`,
       title: event.title,
       body: this.cipher.encrypt(event.body),
       createdAt,

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-02T11:19:30.740Z",
+  "dataNotice": "Synthetic exhaustive-oracle check only. This is not pilot or customer data.",
+  "elapsedMilliseconds": 79.769,
+  "meanMillisecondsPerScenario": 0.266,
+  "report": {
+    "oracleVersion": 1,
+    "dataSource": "synthetic",
+    "seed": 20260902,
+    "datasetHash": "97c0f1fb137929f212c68972333c3157bdf1cd6105637c492e3f2e1500f36317",
+    "scenarioCount": 300,
+    "completeScenarios": 300,
+    "failedScenarios": 0,
+    "plannerCandidateCount": 1831,
+    "oracleCandidateCount": 1831,
+    "missingCandidateCount": 0,
+    "unexpectedCandidateCount": 0,
+    "failures": []
+  }
+}

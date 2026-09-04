@@ -51,6 +51,18 @@ class FakeSql implements SqlExecutor {
       description: "Игровая программа.",
       price: 4000,
     }];
+    if (text.includes("rooms:room-price-rules")) rows = [{
+      room_id: roomId,
+      id: "60000000-0000-4000-8000-000000000001",
+      label: "Вечер выходного дня",
+      weekdays: [6, 7],
+      starts_at: "18:00:00",
+      ends_at: "02:00:00",
+      ends_next_day: true,
+      price_per_hour: 2200,
+      priority: 0,
+      active: true,
+    }];
     if (text.includes("rooms:room-schedules")) rows = [{
       room_id: roomId,
       enabled: true,
@@ -116,6 +128,16 @@ test("postgres repository hydrates room media, services, schedule and reservatio
   assert.ok(room);
   assert.deepEqual(room.photoPaths, ["assets/kids-loft.jpg", "assets/banquet-hall.jpg"]);
   assert.equal(room.services[0]?.name, "Аниматор");
+  assert.deepEqual(room.priceRules?.[0], {
+    id: "60000000-0000-4000-8000-000000000001",
+    label: "Вечер выходного дня",
+    weekdays: [6, 7],
+    startsAtHour: 18,
+    endsAtHour: 26,
+    pricePerHour: 2200,
+    priority: 0,
+    active: true,
+  });
   assert.equal(room.opensAtHour, 11);
   assert.equal(room.closesAtHour, 23);
   assert.deepEqual(room.blockedByDate["2026-07-18"], [[18, 20]]);

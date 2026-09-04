@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
 import type { CatalogRepository } from "./catalog.js";
-import type { City, CityStats, HourInterval, PaymentMethod, PublicReview, PublicationStatus, Room, RoomSearchFilters, RoomService, Venue } from "./types.js";
+import type { City, CityStats, HourInterval, PaymentMethod, PublicReview, PublicationStatus, Room, RoomPriceRule, RoomSearchFilters, RoomService, Venue } from "./types.js";
 
 export interface SqlExecutor {
   query<Row extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<{ rows: Row[] }>;
@@ -56,6 +56,19 @@ interface ServiceRow extends QueryResultRow {
   name: string;
   description: string | null;
   price: number | string;
+}
+
+interface PriceRuleRow extends QueryResultRow {
+  room_id: string;
+  id: string;
+  label: string;
+  weekdays: number[];
+  starts_at: string;
+  ends_at: string;
+  ends_next_day: boolean;
+  price_per_hour: number | string;
+  priority: number;
+  active: boolean;
 }
 
 interface ScheduleRow extends QueryResultRow {
@@ -308,7 +321,7 @@ export class PostgresCatalogRepository implements CatalogRepository {
   private async hydrateRooms(rows: RoomRow[], date?: string): Promise<Room[]> {
     if (!rows.length) return [];
     const roomIds = rows.map((row) => row.id);
-    const [photosResult, servicesResult, schedules, blocks] = await Promise.all([
+    const [photosResult, servicesResult, priceRulesResult, schedules, blocks] = await Promise.all([
       this.sql.query<PhotoRow>(`/* rooms:room-photos */
         select p.room_id::text, coalesce(p.landscape_url, p.original_url) as url
         from room_photos p
@@ -321,6 +334,13 @@ export class PostgresCatalogRepository implements CatalogRepository {
         where s.room_id = any($1::uuid[]) and s.active
         order by s.room_id, s.sort_order, s.name
       `, [roomIds]),
+      this.sql.query<PriceRuleRow>(`/* rooms:room-price-rules */
+        select p.room_id::text, p.id::text, p.label, p.weekdays, p.starts_at::text, p.ends_at::text,
+          p.ends_next_day, p.price_per_hour::float8, p.priority, p.active
+        from room_price_rules p
+        where p.room_id = any($1::uuid[]) and p.active
+        order by p.room_id, p.priority, p.label
+      `, [roomIds]),
       date ? this.loadSchedules(roomIds, date) : Promise.resolve(new Map<string, ScheduleRow>()),
       date ? this.loadBlocks(roomIds, date) : Promise.resolve(new Map<string, HourInterval[]>()),
     ]);
@@ -330,6 +350,20 @@ export class PostgresCatalogRepository implements CatalogRepository {
     for (const service of servicesResult.rows) {
       const item: RoomService = { id: service.id, name: service.name, description: service.description, price: numeric(service.price) };
       services.set(service.room_id, [...(services.get(service.room_id) ?? []), item]);
+    }
+    const priceRules = new Map<string, RoomPriceRule[]>();
+    for (const rule of priceRulesResult.rows) {
+      const item: RoomPriceRule = {
+        id: rule.id,
+        label: rule.label,
+        weekdays: rule.weekdays.map(numeric),
+        startsAtHour: clockHour(rule.starts_at),
+        endsAtHour: clockHour(rule.ends_at, rule.ends_next_day),
+        pricePerHour: numeric(rule.price_per_hour),
+        priority: rule.priority,
+        active: rule.active,
+      };
+      priceRules.set(rule.room_id, [...(priceRules.get(rule.room_id) ?? []), item]);
     }
     return rows.map((row) => {
       const schedule = schedules.get(row.id);
@@ -358,6 +392,7 @@ export class PostgresCatalogRepository implements CatalogRepository {
         tags: row.tags ?? [],
         photoPaths: photos.get(row.id) ?? [],
         services: services.get(row.id) ?? [],
+        priceRules: priceRules.get(row.id) ?? [],
         opensAtHour,
         closesAtHour,
         bufferMinutes: row.buffer_minutes,

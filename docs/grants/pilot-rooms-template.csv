@@ -1,0 +1,2 @@
+venue_code,room_code,city,venue_type,room_type,capacity_min,capacity_max,opens_at,closes_at,start_step_minutes,minimum_duration_minutes,buffer_before_minutes,buffer_after_minutes,price_per_hour_rub,can_combine_with_room_codes
+V001,R001,Voronezh,karaoke,karaoke_room,2,12,12:00,02:00,30,120,15,15,2000,

@@ -38,6 +38,17 @@ export interface RoomService {
   price: number;
 }
 
+export interface RoomPriceRule {
+  id: string;
+  label: string;
+  weekdays: number[];
+  startsAtHour: number;
+  endsAtHour: number;
+  pricePerHour: number;
+  priority: number;
+  active: boolean;
+}
+
 export type HourInterval = readonly [number, number];
 
 export interface Room {
@@ -60,6 +71,7 @@ export interface Room {
   tags: string[];
   photoPaths: string[];
   services: RoomService[];
+  priceRules?: RoomPriceRule[];
   opensAtHour: number;
   closesAtHour: number;
   bufferMinutes: 0 | 15 | 30 | 45 | 60;
@@ -113,6 +125,7 @@ export interface PublicRoomDetail extends PublicRoomSummary {
   closesAtHour: number;
   bufferMinutes: number;
   services: RoomService[];
+  priceRules: RoomPriceRule[];
   availability: {
     date: string;
     timezone: string;

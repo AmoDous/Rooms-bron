@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DeleteObjectsCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import sharp from "sharp";
 import { buildApp } from "../src/app.js";
 import { hashPassword, MemoryAuthRepository } from "../src/auth.js";
 import { MemoryBookingRepository } from "../src/bookings.js";
 import { demoVenues, roomIds, venueIds } from "../src/catalog.js";
-import { MemoryPhotoStorage, PhotoUploadError, processPhoto } from "../src/media.js";
+import {
+  MemoryPhotoStorage,
+  PhotoUploadError,
+  S3PhotoStorage,
+  photoStorageFromEnv,
+  processPhoto,
+  type S3CommandSender,
+} from "../src/media.js";
 import { MemoryPartnerCatalogRepository } from "../src/partnerCatalog.js";
 
 function multipartPhoto(file: Buffer, filename: string, contentType: string) {
@@ -42,6 +50,98 @@ test("photo processing rejects files that only pretend to be images", async () =
   await assert.rejects(
     () => processPhoto(Buffer.from("not an image")),
     (error: unknown) => error instanceof PhotoUploadError && error.code === "PHOTO_INVALID",
+  );
+});
+
+function memoryS3Sender(objects: Map<string, Buffer>): S3CommandSender {
+  return async (command) => {
+    if (command instanceof PutObjectCommand) {
+      assert.ok(command.input.Key);
+      objects.set(command.input.Key, Buffer.from(command.input.Body as Uint8Array));
+      return {};
+    }
+    if (command instanceof GetObjectCommand) {
+      assert.ok(command.input.Key);
+      const object = objects.get(command.input.Key);
+      if (!object) throw Object.assign(new Error("missing"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      return { Body: { transformToByteArray: async () => Uint8Array.from(object) } };
+    }
+    assert.ok(command instanceof DeleteObjectsCommand);
+    for (const object of command.input.Delete?.Objects ?? []) {
+      if (object.Key) objects.delete(object.Key);
+    }
+    return {};
+  };
+}
+
+test("S3 photo storage keeps the bucket private behind stable media URLs", async () => {
+  const objects = new Map<string, Buffer>();
+  const storage = new S3PhotoStorage({ bucket: "rooms-test", prefix: "/production/photos/" }, memoryS3Sender(objects));
+  const stored = await storage.save({
+    original: Buffer.from("original"),
+    landscape: Buffer.from("landscape"),
+    portrait: Buffer.from("portrait"),
+    width: 1200,
+    height: 800,
+    mimeType: "image/webp",
+  });
+
+  assert.equal(storage.storage, "s3");
+  assert.equal(objects.size, 3);
+  assert.equal(stored.originalUrl, `/media/${stored.storageKey}/original.webp`);
+  assert.ok(objects.has(`production/photos/${stored.storageKey}/portrait.webp`));
+  assert.deepEqual(await storage.read(stored.storageKey, "landscape"), Buffer.from("landscape"));
+  assert.equal(await storage.read("not-a-storage-key", "original"), null);
+
+  await storage.remove(stored.storageKey);
+  assert.equal(objects.size, 0);
+  assert.equal(await storage.read(stored.storageKey, "original"), null);
+});
+
+test("S3 photo storage removes partial variants after a failed upload", async () => {
+  const objects = new Map<string, Buffer>();
+  const baseSender = memoryS3Sender(objects);
+  let cleanupRequests = 0;
+  const sender: S3CommandSender = async (command) => {
+    if (command instanceof PutObjectCommand && command.input.Key?.endsWith("/landscape.webp")) {
+      throw new Error("simulated S3 failure");
+    }
+    if (command instanceof DeleteObjectsCommand) cleanupRequests += 1;
+    return baseSender(command);
+  };
+  const storage = new S3PhotoStorage({ bucket: "rooms-test" }, sender);
+
+  await assert.rejects(() => storage.save({
+    original: Buffer.from("original"),
+    landscape: Buffer.from("landscape"),
+    portrait: Buffer.from("portrait"),
+    width: 1200,
+    height: 800,
+    mimeType: "image/webp",
+  }), /simulated S3 failure/u);
+  assert.equal(cleanupRequests, 1);
+  assert.equal(objects.size, 0);
+});
+
+test("photo storage configuration fails closed in production", () => {
+  assert.equal(photoStorageFromEnv({ NODE_ENV: "development" } as NodeJS.ProcessEnv).storage, "local");
+  assert.throws(
+    () => photoStorageFromEnv({ NODE_ENV: "production", PHOTO_STORAGE_MODE: "local" } as NodeJS.ProcessEnv),
+    /not allowed in production/u,
+  );
+  assert.throws(
+    () => photoStorageFromEnv({ NODE_ENV: "production", PHOTO_STORAGE_MODE: "s3" } as NodeJS.ProcessEnv),
+    /S3_BUCKET is required/u,
+  );
+  assert.throws(
+    () => photoStorageFromEnv({
+      NODE_ENV: "production",
+      PHOTO_STORAGE_MODE: "s3",
+      S3_BUCKET: "rooms",
+      S3_REGION: "ru-central1",
+      S3_ENDPOINT: "http://storage.internal",
+    } as NodeJS.ProcessEnv),
+    /must use HTTPS/u,
   );
 });
 

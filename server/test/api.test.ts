@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
@@ -25,7 +28,59 @@ test("health reports the active repository", async () => {
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json().status, "ok");
   assert.deepEqual(response.json().storage, "memory");
+  assert.deepEqual(response.json().media, "memory");
+  assert.deepEqual(response.json().rateLimits, "memory");
   assert.deepEqual(response.json().database, "down");
+});
+
+test("operations health is admin-only and exposes aggregates without secrets", async () => {
+  const adminPassword = "operations-admin-2026";
+  const authRepository = new MemoryAuthRepository([{
+    id: "50000000-0000-4000-8000-000000000099",
+    role: "admin",
+    name: "Operations Admin",
+    email: "operations.admin@rooms.test",
+    phone: null,
+    city: "Воронеж",
+    passwordHash: await hashPassword(adminPassword),
+    passwordResetRequired: false,
+    blockedAt: null,
+  }]);
+  const backupDirectory = await mkdtemp(join(tmpdir(), "rooms-operations-"));
+  const backupStatusFile = join(backupDirectory, "latest.json");
+  await writeFile(backupStatusFile, JSON.stringify({ createdAt: new Date().toISOString(), sizeBytes: 152_972 }));
+  const operationsApp = buildApp({ logger: false, authRepository, backupStatusFile });
+  await operationsApp.ready();
+  try {
+    const denied = await operationsApp.inject({ method: "GET", url: "/v1/admin/operations/health" });
+    assert.equal(denied.statusCode, 401);
+    const login = await operationsApp.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: { login: "operations.admin@rooms.test", password: adminPassword },
+    });
+    assert.equal(login.statusCode, 200);
+    const response = await operationsApp.inject({
+      method: "GET",
+      url: "/v1/admin/operations/health",
+      headers: { authorization: `Bearer ${login.json().accessToken as string}` },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["cache-control"], "no-store");
+    const payload = response.json();
+    assert.equal(payload.status, "attention");
+    assert.equal(payload.dependencies.database, "memory");
+    assert.equal(payload.dependencies.payments, "demo");
+    assert.ok(payload.requests.total >= 3);
+    assert.equal(typeof payload.queues.notifications.failed, "number");
+    assert.equal(payload.backup.status, "fresh");
+    assert.equal(payload.backup.sizeBytes, 152_972);
+    assert.ok(Array.isArray(payload.warnings));
+    assert.doesNotMatch(response.body, /operations\.admin@rooms\.test|operations-admin-2026|accessToken|authorization/i);
+  } finally {
+    await operationsApp.close();
+    await rm(backupDirectory, { recursive: true, force: true });
+  }
 });
 
 test("local preview serves the current site and its room photography", async () => {
@@ -33,6 +88,7 @@ test("local preview serves the current site and its room photography", async () 
   assert.equal(page.statusCode, 200);
   assert.match(page.headers["content-type"] ?? "", /text\/html/);
   assert.match(page.body, /Rooms/);
+  assert.match(page.body, /window\.ROOMS_CONFIG=Object\.freeze\(\{"mode":"development","apiBase":"http:\/\/127\.0\.0\.1:3001"\}\)/u);
   const venuePage = await app.inject({ method: "GET", url: "/venues/kids-loft" });
   assert.equal(venuePage.statusCode, 200);
   assert.match(venuePage.headers["content-type"] ?? "", /text\/html/);
@@ -81,7 +137,12 @@ test("local preview serves the current site and its room photography", async () 
 });
 
 test("production responses include defensive headers and auth responses are not cached", async () => {
-  const productionApp = buildApp({ logger: false, productionMode: true, secureCookies: true });
+  const productionApp = buildApp({
+    logger: false,
+    productionMode: true,
+    secureCookies: true,
+    publicApiUrl: "https://api.rooms.test/",
+  });
   await productionApp.ready();
   try {
     const health = await productionApp.inject({ method: "GET", url: "/health" });
@@ -90,6 +151,9 @@ test("production responses include defensive headers and auth responses are not 
     assert.equal(health.headers["referrer-policy"], "strict-origin-when-cross-origin");
     assert.equal(health.headers["permissions-policy"], "camera=(), microphone=(), geolocation=()");
     assert.equal(health.headers["strict-transport-security"], "max-age=31536000; includeSubDomains");
+
+    const page = await productionApp.inject({ method: "GET", url: "/" });
+    assert.match(page.body, /window\.ROOMS_CONFIG=Object\.freeze\(\{"mode":"production","apiBase":"https:\/\/api\.rooms\.test"\}\)/u);
 
     const login = await productionApp.inject({
       method: "POST",
@@ -1499,6 +1563,34 @@ test("availability intersects several rooms and explains the maximum duration", 
   assert.equal(windows.find((window: { startsAt: string }) => window.startsAt.includes("T20:00:00"))?.maximumDurationMinutes, 120);
 });
 
+test("public room windows and availability search both respect the booking buffer", async () => {
+  const repository = new MemoryCatalogRepository();
+  const findRoom = repository.findRoom.bind(repository);
+  repository.findRoom = async (idOrSlug, date) => {
+    const room = await findRoom(idOrSlug, date);
+    return room?.id === roomIds.kosmos ? { ...room, bufferMinutes: 30 } : room;
+  };
+  const bufferedApp = buildApp({ repository, logger: false });
+  await bufferedApp.ready();
+  try {
+    const detail = await bufferedApp.inject({ method: "GET", url: "/v1/rooms/kosmos?date=2026-07-18" });
+    const search = await bufferedApp.inject({
+      method: "POST",
+      url: "/v1/availability/search",
+      payload: { roomIds: [roomIds.kosmos], date: "2026-07-18", durationMinutes: 120 },
+    });
+    assert.equal(detail.statusCode, 200);
+    assert.equal(search.statusCode, 200);
+    const detailStarts = detail.json().availability.windows.map((window: { startsAt: string }) => window.startsAt);
+    const searchStarts = search.json().windows.map((window: { startsAt: string }) => window.startsAt);
+    assert.ok(detailStarts.some((value: string) => value.includes("T15:30:00")));
+    assert.ok(!detailStarts.some((value: string) => value.includes("T16:00:00")));
+    assert.deepEqual(searchStarts, detailStarts);
+  } finally {
+    await bufferedApp.close();
+  }
+});
+
 test("availability rejects unknown rooms and over-capacity groups", async () => {
   const unknown = await app.inject({
     method: "POST",
@@ -1515,6 +1607,67 @@ test("availability rejects unknown rooms and over-capacity groups", async () => 
   });
   assert.equal(capacity.statusCode, 200);
   assert.deepEqual(capacity.json().windows, []);
+});
+
+test("planning preview ranks server-backed room sets and explains every score", async () => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/planning/preview",
+    payload: {
+      roomSets: [
+        { id: "kids-combined", roomIds: [roomIds.kosmos, roomIds.safari] },
+        { id: "kids-kosmos", roomIds: [roomIds.kosmos] },
+      ],
+      date: "2026-07-18",
+      preferredTime: "20:00",
+      durationMinutes: 120,
+      guests: 12,
+      maxVariants: 4,
+      requiredFeatures: ["kids"],
+      requestedServiceIds: ["30000000-0000-4000-8000-000000000001"],
+    },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "no-store");
+  const payload = response.json();
+  assert.equal(payload.algorithmVersion, "0.2.0");
+  assert.equal(payload.constraintSetHash.length, 64);
+  assert.ok(payload.candidatesEvaluated > 0);
+  assert.ok(payload.variants.length <= 4);
+  assert.deepEqual(Object.keys(payload.variants[0].components).sort(), ["capacitySlack", "fragmentation", "price", "timeShift"]);
+  assert.ok(payload.variants[0].reasons.length >= 2);
+  assert.equal(payload.variants[0].servicesPriceRub, 4000);
+  assert.ok(payload.variants[0].reasons.some((reason: { code: string }) => reason.code === "SERVICES_INCLUDED"));
+  assert.equal("phone" in payload, false);
+});
+
+test("planning preview rejects unknown and cross-venue room sets", async () => {
+  const unknown = await app.inject({
+    method: "POST",
+    url: "/v1/planning/preview",
+    payload: {
+      roomSets: [{ id: "unknown", roomIds: ["missing-room"] }],
+      date: "2026-07-18",
+      preferredTime: "12:00",
+      durationMinutes: 120,
+      guests: 2,
+    },
+  });
+  assert.equal(unknown.statusCode, 404);
+  assert.equal(unknown.json().code, "ROOM_NOT_FOUND");
+  const crossVenue = await app.inject({
+    method: "POST",
+    url: "/v1/planning/preview",
+    payload: {
+      roomSets: [{ id: "invalid-combination", roomIds: [roomIds.kosmos, roomIds.voiceVip] }],
+      date: "2026-07-18",
+      preferredTime: "12:00",
+      durationMinutes: 120,
+      guests: 2,
+    },
+  });
+  assert.equal(crossVenue.statusCode, 400);
+  assert.equal(crossVenue.json().code, "PLANNING_INPUT_INVALID");
 });
 
 test("availability rolls after-midnight windows into the next calendar day", () => {

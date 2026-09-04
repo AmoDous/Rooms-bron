@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-02T11:19:30.167Z",
+  "dataNotice": "Synthetic benchmark only. This is not pilot, customer or sales data.",
+  "datasetHash": "e7a14a5116a2b26d01d9c9910acfdbb6a5891227cea1a183ab8795dc5479a5ef",
+  "iterations": 500,
+  "runtime": {
+    "node": "v24.18.0",
+    "platform": "win32",
+    "release": "10.0.19045",
+    "architecture": "x64"
+  },
+  "report": {
+    "fixtureVersion": 1,
+    "dataSource": "synthetic",
+    "scenarioCount": 120,
+    "feasibleScenarios": 95,
+    "infeasibleScenarios": 25,
+    "exactCandidateScenarios": 34,
+    "profiles": [
+      "open-day",
+      "split-midday",
+      "evening-peak",
+      "fragmented-day",
+      "two-room-common",
+      "two-room-tight",
+      "three-room-event",
+      "short-day"
+    ],
+    "strategies": [
+      {
+        "strategy": "first_available",
+        "selectedScenarios": 95,
+        "exactSelections": 10,
+        "exactSelectionRate": 0.105,
+        "alternativeOpportunities": 61,
+        "alternativesReturned": 61,
+        "alternativeCoverageRate": 1,
+        "meanAbsoluteShiftMinutes": 270.947,
+        "meanAddedOrphanedMinutes": 15.789,
+        "p50Microseconds": 45.578,
+        "p95Microseconds": 83.205
+      },
+      {
+        "strategy": "preferred_nearest",
+        "selectedScenarios": 95,
+        "exactSelections": 34,
+        "exactSelectionRate": 0.358,
+        "alternativeOpportunities": 61,
+        "alternativesReturned": 61,
+        "alternativeCoverageRate": 1,
+        "meanAbsoluteShiftMinutes": 128.526,
+        "meanAddedOrphanedMinutes": 19.263,
+        "p50Microseconds": 44.165,
+        "p95Microseconds": 69.06
+      },
+      {
+        "strategy": "rooms_multicriteria_v1",
+        "selectedScenarios": 95,
+        "exactSelections": 33,
+        "exactSelectionRate": 0.347,
+        "alternativeOpportunities": 61,
+        "alternativesReturned": 61,
+        "alternativeCoverageRate": 1,
+        "meanAbsoluteShiftMinutes": 129.474,
+        "meanAddedOrphanedMinutes": 17.053,
+        "p50Microseconds": 69.334,
+        "p95Microseconds": 81.05
+      }
+    ],
+    "experimentalComparison": {
+      "reference": "preferred_nearest",
+      "contender": "rooms_multicriteria_v1",
+      "meanShiftDifferenceMinutes": 0.948,
+      "exactSelectionRateDifference": -0.011,
+      "meanAddedOrphanedDifferenceMinutes": -2.21,
+      "addedOrphanedReductionRate": 0.115
+    }
+  }
+}

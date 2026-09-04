@@ -65,6 +65,9 @@ export function availabilityForRoom(
   date: string,
   durationMinutes: number,
   preferredTime?: string,
+  stepMinutes = 30,
+  bufferBeforeMinutes = 0,
+  bufferAfterMinutes = 0,
 ): AvailabilityWindow[] {
   const opens = room.opensAtHour * 60;
   const closes = room.closesAtHour * 60;
@@ -75,11 +78,13 @@ export function availabilityForRoom(
   const blocks = roomBlocks(room, date);
   const windows: AvailabilityWindow[] = [];
 
-  for (let start = opens; start + durationMinutes <= closes; start += 30) {
-    const containing = blocks.find(([blockedStart, blockedEnd]) => start >= blockedStart && start < blockedEnd);
-    if (containing) continue;
-    const nextBlock = blocks.find(([blockedStart]) => blockedStart > start);
-    const freeUntil = Math.min(closes, nextBlock?.[0] ?? closes);
+  for (let start = opens; start + durationMinutes <= closes; start += stepMinutes) {
+    const occupiedStart = start - bufferBeforeMinutes;
+    const occupiedEnd = start + durationMinutes + bufferAfterMinutes;
+    const overlaps = blocks.some(([blockedStart, blockedEnd]) => blockedStart < occupiedEnd && blockedEnd > occupiedStart);
+    if (overlaps) continue;
+    const nextBlock = blocks.find(([blockedStart]) => blockedStart >= occupiedEnd);
+    const freeUntil = nextBlock ? Math.min(closes, nextBlock[0] - bufferAfterMinutes) : closes;
     const maximumDurationMinutes = freeUntil - start;
     if (maximumDurationMinutes < durationMinutes) continue;
     windows.push({

@@ -35,10 +35,19 @@ export interface ClientRegistrationInput {
   userAgent: string | null;
 }
 
+export interface PartnerRegistrationInput {
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+  passwordHash: string;
+}
+
 export interface AuthSessionRecord {
   id: string;
   userId: string;
   refreshTokenHash: string;
+  secondFactorVerifiedAt: string | null;
   userAgent: string | null;
   ip: string | null;
   expiresAt: string;
@@ -51,6 +60,7 @@ export interface PublicAuthSession {
   id: string;
   userAgent: string | null;
   ip: string | null;
+  secondFactorVerified: boolean;
   expiresAt: string;
   createdAt: string;
   lastSeenAt: string;
@@ -91,6 +101,7 @@ export interface AuthRepository {
   revokeSession(id: string): Promise<void>;
   revokeSessionForUser(userId: string, sessionId: string): Promise<boolean>;
   revokeOtherSessions(userId: string, exceptSessionId: string): Promise<void>;
+  revokeAllSessions(userId: string, revokedAt?: string): Promise<void>;
   createPasswordReset(input: PasswordResetRecord): Promise<void>;
   completePasswordReset(tokenHash: string, passwordHash: string, completedAt: string): Promise<boolean>;
 }
@@ -117,6 +128,7 @@ interface SessionRow extends QueryResultRow {
   id: string;
   user_id: string;
   refresh_token_hash: string;
+  second_factor_verified_at: Date | string | null;
   user_agent: string | null;
   ip: string | null;
   expires_at: Date | string;
@@ -149,6 +161,7 @@ function sessionFromRow(row: SessionRow): AuthSessionRecord {
     id: row.id,
     userId: row.user_id,
     refreshTokenHash: row.refresh_token_hash,
+    secondFactorVerifiedAt: iso(row.second_factor_verified_at),
     userAgent: row.user_agent,
     ip: row.ip,
     expiresAt: iso(row.expires_at)!,
@@ -176,6 +189,26 @@ export class MemoryAuthRepository implements AuthRepository {
     const user: AuthUser = {
       id: randomUUID(),
       role: "client",
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      city: input.city,
+      passwordHash: input.passwordHash,
+      passwordResetRequired: false,
+      blockedAt: null,
+    };
+    this.users.set(user.id, user);
+    return structuredClone(user);
+  }
+
+  async createPartner(input: PartnerRegistrationInput): Promise<AuthUser> {
+    const duplicate = [...this.users.values()].some((user) => (
+      user.email?.toLocaleLowerCase("ru-RU") === input.email.toLocaleLowerCase("ru-RU") || user.phone === input.phone
+    ));
+    if (duplicate) throw new AuthConflictError();
+    const user: AuthUser = {
+      id: randomUUID(),
+      role: "partner",
       name: input.name,
       email: input.email,
       phone: input.phone,
@@ -268,6 +301,12 @@ export class MemoryAuthRepository implements AuthRepository {
     const revokedAt = new Date().toISOString();
     for (const [id, session] of this.sessions) {
       if (session.userId === userId && id !== exceptSessionId && session.revokedAt === null) this.sessions.set(id, { ...session, revokedAt });
+    }
+  }
+
+  async revokeAllSessions(userId: string, revokedAt = new Date().toISOString()): Promise<void> {
+    for (const [id, session] of this.sessions) {
+      if (session.userId === userId && session.revokedAt === null) this.sessions.set(id, { ...session, revokedAt });
     }
   }
 
@@ -372,16 +411,26 @@ export class PostgresAuthRepository implements AuthRepository {
 
   async createSession(input: AuthSessionRecord & { ip: string | null; userAgent: string | null }): Promise<void> {
     await this.pool.query(`/* rooms:auth-create-session */
-      insert into user_sessions (id, user_id, refresh_token_hash, user_agent, ip, expires_at)
-      values ($1::uuid, $2::uuid, $3, $4, $5::inet, $6::timestamptz)
-    `, [input.id, input.userId, input.refreshTokenHash, input.userAgent, input.ip, input.expiresAt]);
+      insert into user_sessions (
+        id, user_id, refresh_token_hash, second_factor_verified_at, user_agent, ip, expires_at
+      )
+      values ($1::uuid, $2::uuid, $3, $4::timestamptz, $5, $6::inet, $7::timestamptz)
+    `, [
+      input.id,
+      input.userId,
+      input.refreshTokenHash,
+      input.secondFactorVerifiedAt,
+      input.userAgent,
+      input.ip,
+      input.expiresAt,
+    ]);
     await this.pool.query("delete from user_sessions where expires_at < now() - interval '7 days'", []);
   }
 
   async findSession(id: string): Promise<AuthSessionRecord | null> {
     const result = await this.pool.query<SessionRow>(`/* rooms:auth-find-session */
       select id::text, user_id::text, refresh_token_hash, user_agent, host(ip)::text as ip,
-        expires_at, revoked_at, created_at, last_seen_at
+        second_factor_verified_at, expires_at, revoked_at, created_at, last_seen_at
       from user_sessions
       where id = $1::uuid
       limit 1
@@ -398,7 +447,7 @@ export class PostgresAuthRepository implements AuthRepository {
         and revoked_at is null
         and expires_at > now()
       returning id::text, user_id::text, refresh_token_hash, user_agent, host(ip)::text as ip,
-        expires_at, null::timestamptz as revoked_at, created_at, last_seen_at
+        second_factor_verified_at, expires_at, null::timestamptz as revoked_at, created_at, last_seen_at
     `, [id, refreshTokenHash]);
     return result.rows[0] ? sessionFromRow(result.rows[0]) : null;
   }
@@ -413,7 +462,7 @@ export class PostgresAuthRepository implements AuthRepository {
   async listSessions(userId: string): Promise<AuthSessionRecord[]> {
     const result = await this.pool.query<SessionRow>(`/* rooms:auth-list-sessions */
       select id::text, user_id::text, refresh_token_hash, user_agent, host(ip)::text as ip,
-        expires_at, revoked_at, created_at, last_seen_at
+        second_factor_verified_at, expires_at, revoked_at, created_at, last_seen_at
       from user_sessions
       where user_id = $1::uuid and revoked_at is null and expires_at > now()
       order by last_seen_at desc, created_at desc
@@ -440,6 +489,14 @@ export class PostgresAuthRepository implements AuthRepository {
       set revoked_at = coalesce(revoked_at, now())
       where user_id = $1::uuid and id <> $2::uuid and revoked_at is null
     `, [userId, exceptSessionId]);
+  }
+
+  async revokeAllSessions(userId: string, revokedAt = new Date().toISOString()): Promise<void> {
+    await this.pool.query(`
+      update user_sessions
+      set revoked_at = coalesce(revoked_at, $2::timestamptz)
+      where user_id = $1::uuid and revoked_at is null
+    `, [userId, revokedAt]);
   }
 
   async createPasswordReset(input: PasswordResetRecord): Promise<void> {
@@ -580,7 +637,7 @@ export function normalizeRussianPhone(value: string): string | null {
   return digits.length === 11 && digits.startsWith("7") ? `+${digits}` : null;
 }
 
-function publicUser(user: AuthUser): PublicUser {
+export function publicUser(user: AuthUser): PublicUser {
   return {
     id: user.id,
     role: user.role,
@@ -601,6 +658,7 @@ interface AccessPayload {
 }
 
 export interface IssuedAuthSession {
+  sessionId: string;
   user: PublicUser;
   accessToken: string;
   expiresIn: number;
@@ -629,25 +687,53 @@ export interface ClientProfileChange {
 
 export class AuthService {
   private readonly dummyPasswordHash: Promise<string>;
+  private readonly secondFactorRoles: ReadonlySet<UserRole>;
 
-  constructor(private readonly repository: AuthRepository, private readonly tokenSecret: string) {
+  constructor(
+    private readonly repository: AuthRepository,
+    private readonly tokenSecret: string,
+    secondFactorRoles: Iterable<UserRole> = [],
+  ) {
     if (Buffer.byteLength(tokenSecret, "utf8") < 32) throw new Error("AUTH_TOKEN_SECRET must contain at least 32 bytes.");
     this.dummyPasswordHash = hashPassword(randomBytes(32).toString("base64url"));
+    this.secondFactorRoles = new Set(secondFactorRoles);
   }
 
   async register(input: Omit<ClientRegistrationInput, "passwordHash"> & { password: string }): Promise<IssuedAuthSession> {
     const passwordHash = await hashPassword(input.password);
     const user = await this.repository.createClient({ ...input, passwordHash });
-    return this.issueSession(user, input.ip, input.userAgent);
+    return this.issueSession(user, input.ip, input.userAgent, null);
   }
 
   async login(login: string, password: string, ip: string | null, userAgent: string | null): Promise<IssuedAuthSession | null> {
+    const user = await this.verifyCredentials(login, password);
+    if (!user || this.requiresSecondFactor(user.role)) return null;
+    return this.issueSession(user, ip, userAgent, null);
+  }
+
+  async verifyCredentials(login: string, password: string): Promise<AuthUser | null> {
     const user = await this.repository.findUserByLogin(login, normalizeRussianPhone(login));
     const passwordHash = user?.passwordHash ?? await this.dummyPasswordHash;
     const passwordMatches = await verifyPassword(password, passwordHash);
     if (!user || !passwordMatches || user.blockedAt !== null) return null;
     await this.repository.touchUser(user.id);
-    return this.issueSession(user, ip, userAgent);
+    return user;
+  }
+
+  requiresSecondFactor(role: UserRole): boolean {
+    return this.secondFactorRoles.has(role);
+  }
+
+  async issueSessionForUser(
+    userId: string,
+    ip: string | null,
+    userAgent: string | null,
+    secondFactorVerified: boolean,
+  ): Promise<IssuedAuthSession | null> {
+    const user = await this.repository.findUserById(userId);
+    if (!user || user.blockedAt !== null) return null;
+    if (this.requiresSecondFactor(user.role) && !secondFactorVerified) return null;
+    return this.issueSession(user, ip, userAgent, secondFactorVerified ? new Date().toISOString() : null);
   }
 
   async refresh(refreshToken: string, ip: string | null, userAgent: string | null): Promise<IssuedAuthSession | null> {
@@ -658,7 +744,8 @@ export class AuthService {
     if (!session) return null;
     const user = await this.repository.findUserById(session.userId);
     if (!user || user.blockedAt !== null) return null;
-    return this.issueSession(user, ip, userAgent);
+    if (this.requiresSecondFactor(user.role) && session.secondFactorVerifiedAt === null) return null;
+    return this.issueSession(user, ip, userAgent, session.secondFactorVerifiedAt);
   }
 
   async authenticate(authorization: string | undefined): Promise<AuthenticatedUser | null> {
@@ -669,6 +756,7 @@ export class AuthService {
     if (!session || session.userId !== payload.sub || !this.sessionActive(session)) return null;
     const user = await this.repository.findUserById(payload.sub);
     if (!user || user.blockedAt !== null || user.role !== payload.role) return null;
+    if (this.requiresSecondFactor(user.role) && session.secondFactorVerifiedAt === null) return null;
     await this.repository.touchSession(session.id);
     return { user: publicUser(user), sessionId: session.id };
   }
@@ -704,6 +792,7 @@ export class AuthService {
       id: session.id,
       userAgent: session.userAgent,
       ip: session.ip,
+      secondFactorVerified: session.secondFactorVerifiedAt !== null,
       expiresAt: session.expiresAt,
       createdAt: session.createdAt,
       lastSeenAt: session.lastSeenAt,
@@ -717,6 +806,10 @@ export class AuthService {
 
   revokeOtherUserSessions(userId: string, currentSessionId: string): Promise<void> {
     return this.repository.revokeOtherSessions(userId, currentSessionId);
+  }
+
+  revokeAllUserSessions(userId: string, revokedAt?: string): Promise<void> {
+    return this.repository.revokeAllSessions(userId, revokedAt);
   }
 
   async updateClientProfile(userId: string, sessionId: string, input: ClientProfileChange): Promise<PublicUser | null> {
@@ -742,7 +835,12 @@ export class AuthService {
     await Promise.all(sessionIds.map((sessionId) => this.repository.revokeSession(sessionId)));
   }
 
-  private async issueSession(user: AuthUser, ip: string | null, userAgent: string | null): Promise<IssuedAuthSession> {
+  private async issueSession(
+    user: AuthUser,
+    ip: string | null,
+    userAgent: string | null,
+    secondFactorVerifiedAt: string | null,
+  ): Promise<IssuedAuthSession> {
     const sessionId = randomUUID();
     const refreshToken = `${sessionId}.${randomBytes(32).toString("base64url")}`;
     const refreshTokenHash = createHash("sha256").update(refreshToken).digest("hex");
@@ -752,6 +850,7 @@ export class AuthService {
       id: sessionId,
       userId: user.id,
       refreshTokenHash,
+      secondFactorVerifiedAt,
       expiresAt,
       revokedAt: null,
       ip,
@@ -760,6 +859,7 @@ export class AuthService {
       lastSeenAt: createdAt,
     });
     return {
+      sessionId,
       user: publicUser(user),
       accessToken: this.signAccessToken(user, sessionId),
       expiresIn: accessTokenLifetimeSeconds,

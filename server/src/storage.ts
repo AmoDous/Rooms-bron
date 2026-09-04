@@ -1,4 +1,5 @@
 import { Pool, type PoolConfig } from "pg";
+import { assertDatabaseSchema } from "./migrations.js";
 import { MemoryAuthRepository, PostgresAuthRepository, type AuthRepository } from "./auth.js";
 import { MemoryBookingRepository, PostgresBookingRepository, type BookingRepository } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
@@ -17,6 +18,22 @@ import { FinanceCipher, MemoryFinanceRepository, PostgresFinanceRepository, type
 import { SberPaymentGateway, type PaymentGateway } from "./paymentGateway.js";
 import { MemoryFiscalReceiptRepository, PostgresFiscalReceiptRepository, type FiscalReceiptRepository } from "./receipts.js";
 import { MemoryRefundRepository, PostgresRefundRepository, type RefundRepository } from "./refunds.js";
+import { MemoryPartnerLeadRepository, PostgresPartnerLeadRepository, type PartnerLeadRepository } from "./partnerLeads.js";
+import {
+  MemoryPartnerInvitationRepository,
+  PostgresPartnerInvitationRepository,
+  type PartnerInvitationRepository,
+} from "./partnerInvitations.js";
+import {
+  MemoryTwoFactorRepository,
+  PostgresTwoFactorRepository,
+  type TwoFactorRepository,
+} from "./twoFactor.js";
+import {
+  MemoryRateLimitRepository,
+  PostgresRateLimitRepository,
+  type RateLimitRepository,
+} from "./rateLimits.js";
 
 export interface CatalogStorage {
   repository: CatalogRepository;
@@ -25,6 +42,10 @@ export interface CatalogStorage {
   paymentRepository: PaymentRepository;
   reservationRepository: PartnerReservationRepository;
   partnerCatalogRepository: PartnerCatalogRepository;
+  partnerLeadRepository: PartnerLeadRepository;
+  partnerInvitationRepository: PartnerInvitationRepository;
+  twoFactorRepository: TwoFactorRepository;
+  rateLimitRepository: RateLimitRepository;
   notificationRepository: NotificationRepository;
   reviewRepository: ReviewRepository;
   supportRepository: SupportRepository;
@@ -81,19 +102,34 @@ export function postgresPoolConfig(env: NodeJS.ProcessEnv = process.env): PoolCo
 
 export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env): Promise<CatalogStorage> {
   const connectionString = env.DATABASE_URL?.trim();
+  if (env.NODE_ENV === "production" && !connectionString) {
+    throw new Error("DATABASE_URL is required in production; in-memory storage is only for development and tests.");
+  }
   const paymentGateway = paymentGatewayFromEnv(env);
   if (!connectionString) {
     if (paymentGateway) throw new Error("DATABASE_URL is required when PAYMENT_PROVIDER=sber.");
     const bookingRepository = new MemoryBookingRepository();
     const repository = new MemoryCatalogRepository();
     const supportRepository = new MemorySupportRepository(bookingRepository);
+    const authRepository = new MemoryAuthRepository();
+    const partnerCatalogRepository = new MemoryPartnerCatalogRepository();
+    const partnerLeadRepository = new MemoryPartnerLeadRepository();
     return {
       repository,
-      authRepository: new MemoryAuthRepository(),
+      authRepository,
       bookingRepository,
       paymentRepository: new MemoryPaymentRepository(bookingRepository),
       reservationRepository: new MemoryPartnerReservationRepository(bookingRepository, repository),
-      partnerCatalogRepository: new MemoryPartnerCatalogRepository(),
+      partnerCatalogRepository,
+      partnerLeadRepository,
+      partnerInvitationRepository: new MemoryPartnerInvitationRepository(
+        partnerLeadRepository,
+        authRepository,
+        bookingRepository,
+        partnerCatalogRepository,
+      ),
+      twoFactorRepository: new MemoryTwoFactorRepository(),
+      rateLimitRepository: new MemoryRateLimitRepository(),
       notificationRepository: new MemoryNotificationRepository(),
       reviewRepository: new MemoryReviewRepository(bookingRepository, repository),
       supportRepository,
@@ -110,6 +146,12 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
   } catch (error) {
     await pool.end();
     throw new Error("Rooms could not connect to PostgreSQL using DATABASE_URL.", { cause: error });
+  }
+  try {
+    await assertDatabaseSchema(pool);
+  } catch (error) {
+    await pool.end();
+    throw error;
   }
   const repository = new PostgresCatalogRepository(pool);
   const bookingRepository = new PostgresBookingRepository(pool);
@@ -128,6 +170,10 @@ export async function createCatalogStorage(env: NodeJS.ProcessEnv = process.env)
     ),
     reservationRepository: new PostgresPartnerReservationRepository(pool),
     partnerCatalogRepository: new PostgresPartnerCatalogRepository(pool),
+    partnerLeadRepository: new PostgresPartnerLeadRepository(pool),
+    partnerInvitationRepository: new PostgresPartnerInvitationRepository(pool),
+    twoFactorRepository: new PostgresTwoFactorRepository(pool),
+    rateLimitRepository: new PostgresRateLimitRepository(pool),
     notificationRepository: new PostgresNotificationRepository(pool),
     reviewRepository: new PostgresReviewRepository(pool, bookingRepository, repository),
     supportRepository,

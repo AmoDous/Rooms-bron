@@ -295,6 +295,10 @@ export class MemoryBookingRepository implements BookingRepository {
     return venue ? structuredClone(venue) : null;
   }
 
+  assignPartnerVenue(partnerId: string, venue: BookingVenue): void {
+    this.partnerVenues.set(partnerId, structuredClone(venue));
+  }
+
   async listByPartner(partnerId: string, group: PartnerBookingStatusGroup): Promise<BookingRecord[]> {
     this.releaseExpired();
     const venue = this.partnerVenues.get(partnerId);

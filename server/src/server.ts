@@ -1,7 +1,8 @@
 import "dotenv/config";
 import { resolve } from "node:path";
 import { buildApp } from "./app.js";
-import { LocalPhotoStorage } from "./media.js";
+import { assertProductionSafety } from "./deployment.js";
+import { photoStorageFromEnv } from "./media.js";
 import {
   NotificationCipher,
   NotificationDispatcher,
@@ -13,18 +14,28 @@ import { fiscalReceiptProviderFromEnv, startFiscalReceiptWorker } from "./receip
 import { startRefundWorker } from "./refunds.js";
 import { createCatalogStorage } from "./storage.js";
 
+assertProductionSafety(process.env);
+
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const port = Number(process.env.PORT || 3001);
 const productionMode = process.env.NODE_ENV === "production";
 const publicSiteUrl = process.env.PUBLIC_SITE_URL?.trim() || (productionMode ? "https://amodous.github.io/Rooms-bron" : `http://${host}:${port}`);
 const publicApiUrl = process.env.PUBLIC_API_URL?.trim() || `http://${host}:${port}`;
-const mediaStorageDir = resolve(process.env.MEDIA_STORAGE_DIR?.trim() || "server-data/media");
+const photoStorage = photoStorageFromEnv();
+const backupStatusFile = resolve(process.env.BACKUP_DIR?.trim() || "server-data/backups", "latest.json");
 const authTokenSecret = process.env.AUTH_TOKEN_SECRET?.trim() || "";
 const effectiveAuthTokenSecret = authTokenSecret || "rooms-local-development-secret-change-me-2026";
+const explicitRateLimitHashKey = process.env.RATE_LIMIT_HASH_KEY?.trim() || "";
+const explicitTwoFactorEncryptionKey = process.env.TWO_FACTOR_ENCRYPTION_KEY?.trim() || "";
 const explicitNotificationEncryptionKey = process.env.NOTIFICATION_ENCRYPTION_KEY?.trim() || "";
 const explicitFinanceEncryptionKey = process.env.FINANCE_ENCRYPTION_KEY?.trim() || "";
+const rateLimitHashKey = explicitRateLimitHashKey || effectiveAuthTokenSecret;
+const twoFactorEncryptionKey = explicitTwoFactorEncryptionKey || effectiveAuthTokenSecret;
 const notificationEncryptionKey = explicitNotificationEncryptionKey || effectiveAuthTokenSecret;
 const financeEncryptionKey = explicitFinanceEncryptionKey || effectiveAuthTokenSecret;
+const enforceTwoFactor = process.env.TWO_FACTOR_REQUIRED === undefined
+  ? true
+  : String(process.env.TWO_FACTOR_REQUIRED).trim().toLowerCase() === "true";
 const notificationWorkerEnabled = process.env.NOTIFICATION_WORKER_ENABLED === undefined
   ? true
   : String(process.env.NOTIFICATION_WORKER_ENABLED).trim().toLowerCase() === "true";
@@ -58,29 +69,17 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 if ((productionMode || process.env.DATABASE_URL?.trim()) && Buffer.byteLength(authTokenSecret, "utf8") < 32) {
   throw new Error("AUTH_TOKEN_SECRET must contain at least 32 bytes in production or when PostgreSQL is enabled.");
 }
-if (productionMode && !secureCookies) throw new Error("AUTH_COOKIE_SECURE must be true in production.");
-if (productionMode && enableDemoPayments) throw new Error("ENABLE_DEMO_PAYMENTS must be false in production.");
-if (productionMode && exposePasswordResetToken) throw new Error("EXPOSE_PASSWORD_RESET_TOKEN must be false in production.");
-if (productionMode && Buffer.byteLength(explicitNotificationEncryptionKey, "utf8") < 32) {
-  throw new Error("NOTIFICATION_ENCRYPTION_KEY must contain at least 32 bytes in production.");
-}
-if (productionMode && Buffer.byteLength(explicitFinanceEncryptionKey, "utf8") < 32) {
-  throw new Error("FINANCE_ENCRYPTION_KEY must contain at least 32 bytes in production.");
-}
-if (productionMode && new Set([authTokenSecret, explicitNotificationEncryptionKey, explicitFinanceEncryptionKey]).size !== 3) {
-  throw new Error("Production authentication, notification and finance keys must be different.");
-}
-if (productionMode && (!publicSiteUrl.startsWith("https://") || !publicApiUrl.startsWith("https://"))) {
-  throw new Error("PUBLIC_SITE_URL and PUBLIC_API_URL must use HTTPS in production.");
-}
-if (productionMode && corsOrigins.some((origin) => origin === "*" || !origin.startsWith("https://"))) {
-  throw new Error("CORS_ORIGINS must contain only explicit HTTPS origins in production.");
-}
 if (Buffer.byteLength(notificationEncryptionKey, "utf8") < 32) {
   throw new Error("NOTIFICATION_ENCRYPTION_KEY must contain at least 32 bytes.");
 }
 if (Buffer.byteLength(financeEncryptionKey, "utf8") < 32) {
   throw new Error("FINANCE_ENCRYPTION_KEY must contain at least 32 bytes.");
+}
+if (Buffer.byteLength(twoFactorEncryptionKey, "utf8") < 32) {
+  throw new Error("TWO_FACTOR_ENCRYPTION_KEY must contain at least 32 bytes.");
+}
+if (Buffer.byteLength(rateLimitHashKey, "utf8") < 32) {
+  throw new Error("RATE_LIMIT_HASH_KEY must contain at least 32 bytes.");
 }
 if (!Number.isInteger(notificationWorkerIntervalMs) || notificationWorkerIntervalMs < 1000) {
   throw new Error("NOTIFICATION_WORKER_INTERVAL_MS must be an integer of at least 1000.");
@@ -117,14 +116,22 @@ const app = buildApp({
   paymentRepository: storage.paymentRepository,
   reservationRepository: storage.reservationRepository,
   partnerCatalogRepository: storage.partnerCatalogRepository,
+  partnerLeadRepository: storage.partnerLeadRepository,
+  partnerInvitationRepository: storage.partnerInvitationRepository,
+  twoFactorRepository: storage.twoFactorRepository,
+  rateLimitRepository: storage.rateLimitRepository,
   notificationRepository: storage.notificationRepository,
   reviewRepository: storage.reviewRepository,
   supportRepository: storage.supportRepository,
   financeRepository: storage.financeRepository,
   receiptRepository: storage.receiptRepository,
   refundRepository: storage.refundRepository,
-  photoStorage: new LocalPhotoStorage(mediaStorageDir),
+  photoStorage,
+  backupStatusFile,
   authTokenSecret: effectiveAuthTokenSecret,
+  rateLimitHashKey,
+  twoFactorEncryptionKey,
+  enforceTwoFactor,
   notificationEncryptionKey,
   productionMode,
   secureCookies,
@@ -192,6 +199,8 @@ try {
     host,
     port,
     storage: storage.repository.storage,
+    mediaStorage: photoStorage.storage,
+    twoFactorRequired: enforceTwoFactor,
     notificationWorker: Boolean(notificationWorker),
     fiscalReceiptWorker: Boolean(fiscalReceiptWorker),
     fiscalReceiptProvider: fiscalReceiptProvider?.providerName ?? "disabled",

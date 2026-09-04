@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { demoRooms, demoVenues } from "./catalog.js";
-import type { PaymentMethod, PublicationStatus, Room, RoomService, Venue } from "./types.js";
+import type { PaymentMethod, PublicationStatus, Room, RoomPriceRule, RoomService, Venue } from "./types.js";
 
 export interface PartnerWeekScheduleDay {
   weekday: number;
@@ -114,6 +114,16 @@ export interface PartnerRoomServiceWrite {
   price: number;
 }
 
+export interface PartnerRoomPriceRuleWrite {
+  id?: string;
+  label: string;
+  weekdays: number[];
+  startsAtHour: number;
+  endsAtHour: number;
+  pricePerHour: number;
+  active: boolean;
+}
+
 export interface PartnerRoomWrite {
   title: string;
   subtitle: string;
@@ -131,6 +141,7 @@ export interface PartnerRoomWrite {
   features: string[];
   tags: string[];
   services: PartnerRoomServiceWrite[];
+  priceRules?: PartnerRoomPriceRuleWrite[];
   status: PublicationStatus;
 }
 
@@ -268,6 +279,19 @@ interface ServiceRow extends QueryResultRow {
   price: number | string;
 }
 
+interface PriceRuleRow extends QueryResultRow {
+  room_id: string;
+  id: string;
+  label: string;
+  weekdays: number[];
+  starts_at: string;
+  ends_at: string;
+  ends_next_day: boolean;
+  price_per_hour: number | string;
+  priority: number;
+  active: boolean;
+}
+
 interface ModerationRow extends QueryResultRow {
   id: string;
   room_id: string | null;
@@ -356,6 +380,25 @@ function normalizedServices(services: PartnerRoomServiceWrite[]): RoomService[] 
   });
 }
 
+function normalizedPriceRules(rules: PartnerRoomPriceRuleWrite[] = []): RoomPriceRule[] {
+  const used = new Set<string>();
+  return rules.map((rule, index) => {
+    let id = rule.id && UUID_PATTERN.test(rule.id) ? rule.id : randomUUID();
+    if (used.has(id)) id = randomUUID();
+    used.add(id);
+    return {
+      id,
+      label: rule.label.trim(),
+      weekdays: [...new Set(rule.weekdays)].sort((left, right) => left - right),
+      startsAtHour: numeric(rule.startsAtHour),
+      endsAtHour: numeric(rule.endsAtHour),
+      pricePerHour: numeric(rule.pricePerHour),
+      priority: index,
+      active: rule.active,
+    };
+  });
+}
+
 function venueProposal(input: PartnerVenueWrite): Record<string, unknown> {
   return {
     title: input.title.trim(),
@@ -382,7 +425,7 @@ function venueBefore(row: VenueDetailsRow): Record<string, unknown> {
   };
 }
 
-function roomProposal(input: PartnerRoomWrite, services: RoomService[]): Record<string, unknown> {
+function roomProposal(input: PartnerRoomWrite, services: RoomService[], priceRules: RoomPriceRule[]): Record<string, unknown> {
   return {
     title: input.title.trim(),
     subtitle: input.subtitle.trim(),
@@ -396,10 +439,11 @@ function roomProposal(input: PartnerRoomWrite, services: RoomService[]): Record<
     features: [...input.features],
     tags: [...input.tags],
     services: services.map((service) => ({ ...service })),
+    priceRules: priceRules.map((rule) => ({ ...rule, weekdays: [...rule.weekdays] })),
   };
 }
 
-function roomBefore(row: RoomDetailsRow, services: RoomService[]): Record<string, unknown> {
+function roomBefore(row: RoomDetailsRow, services: RoomService[], priceRules: RoomPriceRule[] = []): Record<string, unknown> {
   return {
     title: row.title,
     subtitle: row.subtitle ?? "",
@@ -413,6 +457,7 @@ function roomBefore(row: RoomDetailsRow, services: RoomService[]): Record<string
     features: row.features ?? [],
     tags: row.tags ?? [],
     services: services.map((service) => ({ ...service })),
+    priceRules: priceRules.map((rule) => ({ ...rule, weekdays: [...rule.weekdays] })),
   };
 }
 
@@ -475,6 +520,22 @@ function servicesValue(value: unknown): RoomService[] {
       price: numberValue(service.price),
     };
   }).filter((service) => service.name));
+}
+
+function priceRulesValue(value: unknown): RoomPriceRule[] {
+  if (!Array.isArray(value)) return [];
+  return normalizedPriceRules(value.map((item) => {
+    const rule = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      ...(typeof rule.id === "string" ? { id: rule.id } : {}),
+      label: textValue(rule.label),
+      weekdays: Array.isArray(rule.weekdays) ? rule.weekdays.map(numberValue) : [],
+      startsAtHour: numberValue(rule.startsAtHour),
+      endsAtHour: numberValue(rule.endsAtHour),
+      pricePerHour: numberValue(rule.pricePerHour),
+      active: rule.active !== false,
+    };
+  }).filter((rule) => rule.label));
 }
 
 function photoFromRow(row: PhotoRow): PartnerPhotoRecord {
@@ -579,6 +640,15 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
       },
     } satisfies MemoryPhotoRecord] as const;
   })));
+
+  provisionVenue(
+    venue: Venue,
+    contact: { venueType: string; name: string; phone: string; email: string },
+  ): void {
+    this.venues.set(venue.id, structuredClone(venue));
+    this.contacts.set(venue.id, structuredClone(contact));
+    this.schedules.set(venue.id, defaultWeekSchedule());
+  }
 
   private memoryTargetPhotos(venueId: string, roomId: string | null): PartnerPhotoRecord[] {
     return [...this.photoRecords.values()]
@@ -706,6 +776,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
   async createRoom(venueId: string, actorId: string, input: PartnerRoomWrite): Promise<PartnerRoomRecord> {
     const id = randomUUID();
     const services = normalizedServices(input.services);
+    const priceRules = normalizedPriceRules(input.priceRules);
     const room: Room = {
       id,
       slug: `room-${id.slice(0, 8)}`,
@@ -726,6 +797,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
       tags: [...input.tags],
       photoPaths: [],
       services,
+      priceRules,
       opensAtHour: input.opensAtHour,
       closesAtHour: input.closesAtHour,
       bufferMinutes: input.bufferMinutes,
@@ -734,7 +806,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
       publicationStatus: "review",
     };
     this.rooms.set(id, room);
-    const proposed = { ...roomProposal(input, services), publicationRequested: true };
+    const proposed = { ...roomProposal(input, services, priceRules), publicationRequested: true };
     this.queueMemoryModeration("room", id, venueId, actorId, {}, proposed);
     return { ...structuredClone(room), photos: [], pendingChange: structuredClone(this.roomModeration.get(id) ?? null) };
   }
@@ -743,6 +815,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
     const room = this.rooms.get(roomId);
     if (!room || room.venueId !== venueId) return null;
     const services = normalizedServices(input.services);
+    const priceRules = normalizedPriceRules(input.priceRules ?? room.priceRules);
     const before = roomBefore({
       id: room.id, slug: room.slug, venue_id: room.venueId, title: room.title, subtitle: room.subtitle,
       room_type: room.type, description: room.description, rules: room.rules, promotion: room.promotion,
@@ -751,8 +824,8 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
       opens_at: hourToClock(room.opensAtHour), closes_at: hourToClock(room.closesAtHour),
       closes_next_day: room.closesAtHour >= 24, buffer_minutes: room.bufferMinutes, features: room.features,
       tags: room.tags, publication_status: room.publicationStatus,
-    }, room.services);
-    const proposed = roomProposal(input, services);
+    }, room.services, room.priceRules);
+    const proposed = roomProposal(input, services, priceRules);
     const fields = changedFields(before, proposed);
     const published = room.publicationStatus === "published";
     const next: Room = {
@@ -766,7 +839,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
         title: input.title.trim(), subtitle: input.subtitle.trim(), type: input.type.trim(), description: input.description.trim(),
         rules: input.rules.trim(), promotion: input.promotion.trim() || null, capacityMin: input.capacityMin,
         capacityMax: input.capacityMax, pricePerHour: input.pricePerHour, features: [...input.features],
-        tags: [...input.tags], services, publicationStatus: input.status === "hidden" ? "hidden" : "review" as const,
+        tags: [...input.tags], services, priceRules, publicationStatus: input.status === "hidden" ? "hidden" : "review" as const,
       } : {}),
     };
     this.rooms.set(roomId, next);
@@ -944,6 +1017,7 @@ export class MemoryPartnerCatalogRepository implements PartnerCatalogRepository 
         features: stringArray(data.features),
         tags: stringArray(data.tags),
         services: servicesValue(data.services),
+        priceRules: priceRulesValue(data.priceRules),
       } : room;
       const publicationRequested = item.change.proposedData.publicationRequested === true;
       this.rooms.set(item.targetId, {
@@ -1101,7 +1175,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
     `, [venueId]);
     if (!roomResult.rows.length) return [];
     const roomIds = roomResult.rows.map((row) => row.id);
-    const [photosResult, servicesResult, moderationResult] = await Promise.all([
+    const [photosResult, servicesResult, priceRulesResult, moderationResult] = await Promise.all([
       this.pool.query<PhotoRow>(`/* rooms:partner-room-photos */
         select p.id::text, p.room_id::text, p.venue_id::text, p.original_url, p.landscape_url,
           p.portrait_url, p.width, p.height, p.sort_order, p.is_cover, p.status::text, p.created_at,
@@ -1113,6 +1187,12 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
         select s.room_id::text, s.id::text, s.name, s.description, s.price::float8
         from room_services s where s.room_id = any($1::uuid[]) and s.active
         order by s.room_id, s.sort_order, s.name
+      `, [roomIds]),
+      this.pool.query<PriceRuleRow>(`/* rooms:partner-room-price-rules */
+        select p.room_id::text, p.id::text, p.label, p.weekdays, p.starts_at::text, p.ends_at::text,
+          p.ends_next_day, p.price_per_hour::float8, p.priority, p.active
+        from room_price_rules p where p.room_id = any($1::uuid[])
+        order by p.room_id, p.priority, p.label
       `, [roomIds]),
       this.pool.query<ModerationRow>(`/* rooms:partner-room-moderation */
         select m.id::text, m.room_id::text, m.fields, m.before_data, m.proposed_data, m.created_at
@@ -1128,12 +1208,14 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
     for (const service of servicesResult.rows) services.set(service.room_id, [...(services.get(service.room_id) ?? []), {
       id: service.id, name: service.name, description: service.description, price: numeric(service.price),
     }]);
+    const priceRules = new Map<string, RoomPriceRule[]>();
+    for (const rule of priceRulesResult.rows) priceRules.set(rule.room_id, [...(priceRules.get(rule.room_id) ?? []), this.priceRuleFromRow(rule)]);
     const moderation = new Map<string, ModerationRow>();
     for (const item of moderationResult.rows) if (item.room_id && !moderation.has(item.room_id)) moderation.set(item.room_id, item);
     return roomResult.rows.map((row) => {
       const pendingChange = moderationFromRow(moderation.get(row.id));
       const visiblePhotos = partnerVisiblePhotos(photos.get(row.id) ?? [], pendingChange);
-      return this.roomFromRow(row, visiblePhotos, services.get(row.id) ?? [], pendingChange);
+      return this.roomFromRow(row, visiblePhotos, services.get(row.id) ?? [], priceRules.get(row.id) ?? [], pendingChange);
     });
   }
 
@@ -1141,6 +1223,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
     const id = randomUUID();
     const slug = `room-${id.slice(0, 8)}`;
     const services = normalizedServices(input.services);
+    const priceRules = normalizedPriceRules(input.priceRules);
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -1161,7 +1244,8 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
         input.closesAtHour >= 24, input.bufferMinutes, input.features, input.tags,
       ]);
       await this.replaceServices(client, id, services);
-      const proposed = { ...roomProposal(input, services), publicationRequested: true };
+      await this.replacePriceRules(client, id, priceRules);
+      const proposed = { ...roomProposal(input, services, priceRules), publicationRequested: true };
       await this.upsertModeration(client, { venueId: null, roomId: id }, actorId, {}, proposed);
       await this.audit(client, actorId, "partner_room_created", "room", id, {}, proposed);
       await client.query("commit");
@@ -1193,9 +1277,11 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
         return null;
       }
       const currentServices = await this.loadServices(client, roomId);
+      const currentPriceRules = await this.loadPriceRules(client, roomId);
       const services = normalizedServices(input.services);
-      const before = roomBefore(current, currentServices);
-      const proposed = roomProposal(input, services);
+      const priceRules = normalizedPriceRules(input.priceRules ?? currentPriceRules);
+      const before = roomBefore(current, currentServices, currentPriceRules);
+      const proposed = roomProposal(input, services, priceRules);
       const published = current.publication_status === "published";
       if (published) {
         await client.query(`/* rooms:update-partner-room-operational */
@@ -1221,6 +1307,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
           input.bufferMinutes, input.features, input.tags, input.status,
         ]);
         await this.replaceServices(client, roomId, services);
+        await this.replacePriceRules(client, roomId, priceRules);
       }
       const moderationBefore = { ...before, ...(!published ? { publicationRequested: false } : {}) };
       const moderationAfter = {
@@ -1642,6 +1729,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
   ): Promise<void> {
     if (typeof data.title !== "string") return;
     const services = servicesValue(data.services);
+    const priceRules = priceRulesValue(data.priceRules);
     await client.query(`/* rooms:apply-room-moderation */
       update rooms set title = $2, subtitle = $3, room_type = $4, description = $5, rules = $6,
         promotion = nullif($7,''), capacity_min = $8, capacity_max = $9, price_per_hour = $10,
@@ -1654,6 +1742,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
       stringArray(data.features), stringArray(data.tags),
     ]);
     await this.replaceServices(client, roomId, services);
+    await this.replacePriceRules(client, roomId, priceRules);
   }
 
   private async applyPhotoModerationSnapshot(
@@ -1679,6 +1768,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
     row: RoomDetailsRow,
     photos: PartnerPhotoRecord[],
     services: RoomService[],
+    priceRules: RoomPriceRule[],
     pendingChange: PartnerModerationChange | null,
   ): PartnerRoomRecord {
     return {
@@ -1702,6 +1792,7 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
       photoPaths: photos.map((photo) => photo.landscapeUrl),
       photos,
       services,
+      priceRules,
       opensAtHour: clockHour(row.opens_at),
       closesAtHour: clockHour(row.closes_at, row.closes_next_day),
       bufferMinutes: row.buffer_minutes,
@@ -1741,6 +1832,38 @@ export class PostgresPartnerCatalogRepository implements PartnerCatalogRepositor
     return result.rows.map((service) => ({
       id: service.id, name: service.name, description: service.description, price: numeric(service.price),
     }));
+  }
+
+  private priceRuleFromRow(rule: PriceRuleRow): RoomPriceRule {
+    return {
+      id: rule.id,
+      label: rule.label,
+      weekdays: rule.weekdays.map(numeric),
+      startsAtHour: clockHour(rule.starts_at),
+      endsAtHour: clockHour(rule.ends_at, rule.ends_next_day),
+      pricePerHour: numeric(rule.price_per_hour),
+      priority: rule.priority,
+      active: rule.active,
+    };
+  }
+
+  private async replacePriceRules(client: PoolClient, roomId: string, rules: RoomPriceRule[]): Promise<void> {
+    await client.query("delete from room_price_rules where room_id = $1::uuid", [roomId]);
+    for (const rule of rules) {
+      await client.query(`insert into room_price_rules
+        (id, room_id, label, weekdays, starts_at, ends_at, ends_next_day, price_per_hour, priority, active)
+        values ($1::uuid,$2::uuid,$3,$4,$5::time,$6::time,$7,$8,$9,$10)`, [
+        rule.id, roomId, rule.label, rule.weekdays, hourToClock(rule.startsAtHour), hourToClock(rule.endsAtHour),
+        rule.endsAtHour >= 24, rule.pricePerHour, rule.priority, rule.active,
+      ]);
+    }
+  }
+
+  private async loadPriceRules(client: PoolClient, roomId: string): Promise<RoomPriceRule[]> {
+    const result = await client.query<PriceRuleRow>(`select room_id::text, id::text, label, weekdays,
+      starts_at::text, ends_at::text, ends_next_day, price_per_hour::float8, priority, active
+      from room_price_rules where room_id = $1::uuid order by priority, label`, [roomId]);
+    return result.rows.map((rule) => this.priceRuleFromRow(rule));
   }
 
   private async upsertModeration(

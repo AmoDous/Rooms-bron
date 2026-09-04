@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rooms API
-  version: 0.12.0
+  version: 0.19.0
   description: |
     Contract for the Rooms MVP backend. GitHub Pages remains a static frontend;
     the local Fastify service provides PostgreSQL-backed API endpoints.
@@ -31,11 +31,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status, database, storage, time]
+                required: [status, database, storage, media, rateLimits, payments, time]
                 properties:
                   status: {type: string, const: ok}
                   database: {type: string, enum: [up, down]}
                   storage: {type: string, enum: [memory, postgresql]}
+                  media: {type: string, enum: [memory, local, s3]}
+                  rateLimits: {type: string, enum: [memory, postgresql]}
+                  payments: {type: string, enum: [rooms_demo, sber]}
                   time: {type: string, format: date-time}
 
   /v1/cities:
@@ -51,6 +54,104 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/City'
+
+  /v1/partner-leads:
+    post:
+      tags: [Public]
+      operationId: createPartnerLead
+      description: Stores a venue onboarding application. The response deliberately excludes contact data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerLeadCreate'
+      responses:
+        '201':
+          description: Application accepted for review
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerLeadReceipt'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: An active application already uses this email or phone
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: Too many applications from one network address
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /v1/auth/partner-invitations/preview:
+    post:
+      tags: [Auth]
+      operationId: previewPartnerInvitation
+      description: Validates an opaque invitation token sent in the request body so it is not written to API access logs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PartnerInvitationToken'}
+      responses:
+        '200':
+          description: Minimal approved venue context; contact email and phone are deliberately excluded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PartnerInvitationPreview'}
+        '410':
+          description: Invitation expired, was revoked or was already consumed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: Too many validation attempts from this network address
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /v1/auth/partner-invitations/accept:
+    post:
+      tags: [Auth]
+      operationId: acceptPartnerInvitation
+      description: Atomically creates the partner user, review-state venue, membership and legal consent, then consumes the invitation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PartnerInvitationAcceptance'}
+      responses:
+        '201':
+          description: Partner account activated and authenticated
+          headers:
+            Set-Cookie:
+              schema: {type: string}
+              description: HttpOnly refresh cookie
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PartnerActivationSession'}
+        '202':
+          description: Partner account activated; mandatory two-factor setup must be completed before a session is issued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PartnerActivationChallenge'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: An account already exists for the approved contact
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '410':
+          description: Invitation expired, was revoked or was already consumed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 
   /v1/cities/{cityId}/stats:
     get:
@@ -150,6 +251,36 @@ paths:
         '400':
           $ref: '#/components/responses/ValidationError'
 
+  /v1/planning/preview:
+    post:
+      tags: [Public]
+      operationId: previewPlanningVariants
+      description: |
+        Runs the experimental deterministic Rooms planner against current server-side
+        room prices, schedules and reservation blocks. The client supplies room IDs,
+        never prices or occupancy. Results are not cached and contain no personal data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanningPreviewRequest'
+      responses:
+        '200':
+          description: Ranked and explained booking variants
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanningPreviewResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
   /v1/auth/client/register:
     post:
       tags: [Auth]
@@ -191,8 +322,85 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthSession'
+        '202':
+          description: Password accepted; the protected role must complete a short-lived two-factor challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorChallenge'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /v1/auth/2fa/complete:
+    post:
+      tags: [Auth]
+      operationId: completeTwoFactorLogin
+      description: Validates a TOTP or one-time recovery code and only then creates the authenticated session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challengeToken, code]
+              properties:
+                challengeToken: {type: string, minLength: 32, maxLength: 200, writeOnly: true}
+                code: {type: string, minLength: 6, maxLength: 24, writeOnly: true}
+      responses:
+        '200':
+          description: Two-factor check completed and session created
+          headers:
+            Set-Cookie:
+              schema: {type: string}
+              description: HttpOnly refresh cookie
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TwoFactorSession'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '410':
+          description: Challenge expired, was consumed or reached the attempt limit
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: Too many attempts from the network address
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /v1/auth/2fa/recovery/request:
+    post:
+      tags: [Auth]
+      operationId: requestTwoFactorRecovery
+      description: Consumes a verify-mode challenge created only after a correct password and opens a 24-hour administrator review request. It never disables the existing factor by itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challengeToken]
+              properties:
+                challengeToken: {type: string, minLength: 32, maxLength: 200, writeOnly: true}
+      responses:
+        '202':
+          description: Recovery request accepted; no authenticated session is created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TwoFactorRecoveryAccepted'}
+        '410':
+          description: Challenge is unavailable, was a setup challenge or was already consumed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: Too many recovery requests from the network address
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 
   /v1/auth/password-reset/request:
     post:
@@ -302,6 +510,21 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /v1/me/two-factor:
+    get:
+      tags: [Client]
+      operationId: getCurrentUserTwoFactorStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Two-factor requirement and enrollment state for the current account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TwoFactorStatus'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /v1/me/sessions:
     get:
@@ -1666,6 +1889,147 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/admin/two-factor-recovery:
+    get:
+      tags: [Admin]
+      operationId: listTwoFactorRecoveryRequests
+      description: Lists the protected-role recovery queue. Expired pending records are closed before the response.
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [pending, approved, rejected, expired, all], default: all}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 80}}
+      responses:
+        '200':
+          description: Recovery review queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/TwoFactorRecoveryRecord'}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/two-factor-recovery/{recoveryId}:
+    patch:
+      tags: [Admin]
+      operationId: decideTwoFactorRecoveryRequest
+      description: A different administrator approves or rejects the request. Approval atomically deletes the old factor, consumes pending challenges, revokes every target session and requires enrollment after the next password login.
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: recoveryId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {type: string, enum: [approved, rejected]}
+                comment: {type: string, maxLength: 1000, description: Required when rejected}
+      responses:
+        '200':
+          description: Audited recovery decision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TwoFactorRecoveryRecord'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          description: Administrator role required or self-approval attempted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/admin/partner-leads:
+    get:
+      tags: [Admin]
+      operationId: listAdminPartnerLeads
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [new, review, approved, rejected, all], default: all}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 80}}
+      responses:
+        '200':
+          description: Venue onboarding queue including contacts and consent evidence
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/PartnerLead'}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/partner-leads/{leadId}:
+    patch:
+      tags: [Admin]
+      operationId: decideAdminPartnerLead
+      security:
+        - bearerAuth: []
+      parameters:
+        - {name: leadId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {type: string, enum: [review, approved, rejected]}
+                comment: {type: string, maxLength: 1000, description: Required when rejected}
+      responses:
+        '200':
+          description: Queue status and audit record updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PartnerLead'}
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A final decision was already recorded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /v1/admin/partner-leads/{leadId}/invitations:
+    post:
+      tags: [Admin]
+      operationId: issuePartnerInvitation
+      security:
+        - bearerAuth: []
+      description: Issues a 24-hour one-time activation link for an approved lead, revokes any previous unused link and queues an encrypted email delivery.
+      parameters:
+        - {name: leadId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '201':
+          description: Raw activation token is returned only inside this one-time URL; only its SHA-256 hash is stored
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PartnerInvitationReceipt'}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Lead is not approved or the partner account already exists
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
   /v1/admin/moderation:
     get:
       tags: [Admin]
@@ -1916,6 +2280,66 @@ paths:
                 items:
                   $ref: '#/components/schemas/NotificationDelivery'
 
+  /v1/admin/operations/health:
+    get:
+      tags: [Admin]
+      operationId: getOperationsHealth
+      summary: Aggregated operational health without personal data or secrets
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current process, dependency and queue health
+          headers:
+            Cache-Control:
+              schema: {type: string, example: no-store}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, checkedAt, startedAt, uptimeSeconds, dependencies, requests, queues, backup, finance, warnings]
+                properties:
+                  status: {type: string, enum: [ready, attention]}
+                  checkedAt: {type: string, format: date-time}
+                  startedAt: {type: string, format: date-time}
+                  uptimeSeconds: {type: integer, minimum: 0}
+                  dependencies:
+                    type: object
+                    additionalProperties: false
+                    required: [database, notifications, finance, media, payments]
+                    properties:
+                      database: {type: string, enum: [memory, postgresql]}
+                      notifications: {type: string, enum: [memory, postgresql]}
+                      finance: {type: string, enum: [memory, postgresql]}
+                      media: {type: string, enum: [memory, local, s3]}
+                      payments: {type: string, enum: [demo, provider]}
+                  requests:
+                    type: object
+                    additionalProperties: true
+                  queues:
+                    type: object
+                    additionalProperties: true
+                  backup:
+                    type: object
+                    additionalProperties: false
+                    required: [status, createdAt, ageHours, sizeBytes]
+                    properties:
+                      status: {type: string, enum: [not_configured, missing, fresh, stale]}
+                      createdAt: {type: [string, 'null'], format: date-time}
+                      ageHours: {type: [number, 'null'], minimum: 0}
+                      sizeBytes: {type: [integer, 'null'], minimum: 0}
+                  finance:
+                    type: object
+                    additionalProperties: true
+                  warnings:
+                    type: array
+                    items: {type: string}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /v1/admin/migrations/validate:
     post:
       tags: [Admin]
@@ -2000,6 +2424,14 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
+    RateLimited:
+      description: Request rate limit exceeded
+      headers:
+        Retry-After:
+          schema: {type: integer, minimum: 1}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
     SlotConflict:
       description: One or more rooms are no longer available
       content:
@@ -2035,6 +2467,238 @@ components:
           description: Public threshold such as 20+, 50+ or 100+; null while the city is launching.
         audienceStage: {type: string, enum: [launching, growing, established]}
         updatedAt: {type: string, format: date-time}
+
+    PartnerLeadCreate:
+      type: object
+      additionalProperties: false
+      required: [city, venueTitle, address, contactName, contactPhone, contactEmail, venueType, roomCount, comment, legal]
+      properties:
+        city: {type: string, minLength: 2, maxLength: 120}
+        venueTitle: {type: string, minLength: 2, maxLength: 180}
+        address: {type: string, minLength: 3, maxLength: 300}
+        contactName: {type: string, minLength: 2, maxLength: 120}
+        contactPhone: {type: string, minLength: 10, maxLength: 30}
+        contactEmail: {type: string, format: email, maxLength: 320}
+        venueType: {type: string, minLength: 2, maxLength: 120}
+        roomCount: {type: integer, minimum: 1, maximum: 100}
+        comment: {type: string, maxLength: 2000}
+        legal:
+          type: object
+          additionalProperties: false
+          required: [termsVersion, privacyVersion, termsAccepted, privacyAccepted]
+          properties:
+            termsVersion: {type: string, minLength: 1, maxLength: 80}
+            privacyVersion: {type: string, minLength: 1, maxLength: 80}
+            termsAccepted: {type: boolean, const: true}
+            privacyAccepted: {type: boolean, const: true}
+
+    PartnerLeadReceipt:
+      type: object
+      required: [id, status, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, const: new}
+        createdAt: {type: string, format: date-time}
+
+    PartnerLead:
+      type: object
+      required: [id, city, venueTitle, address, contactName, contactPhone, contactEmail, venueType, roomCount, comment, status, termsVersion, privacyVersion, consentedAt, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        city: {type: string}
+        venueTitle: {type: string}
+        address: {type: string}
+        contactName: {type: string}
+        contactPhone: {type: string}
+        contactEmail: {type: string, format: email}
+        venueType: {type: string}
+        roomCount: {type: integer, minimum: 1}
+        comment: {type: string}
+        status: {type: string, enum: [new, review, approved, rejected]}
+        termsVersion: {type: string}
+        privacyVersion: {type: string}
+        consentedAt: {type: string, format: date-time}
+        requestIp: {type: [string, 'null']}
+        requestUserAgent: {type: [string, 'null']}
+        reviewedBy: {type: [string, 'null'], format: uuid}
+        reviewComment: {type: [string, 'null']}
+        reviewedAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        invitation:
+          oneOf:
+            - $ref: '#/components/schemas/PartnerInvitationStatus'
+            - type: 'null'
+
+    PartnerInvitationStatus:
+      type: object
+      required: [id, leadId, expiresAt, consumedAt, revokedAt, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        leadId: {type: string, format: uuid}
+        expiresAt: {type: string, format: date-time}
+        consumedAt: {type: [string, 'null'], format: date-time}
+        revokedAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+
+    PartnerInvitationToken:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{40,100}$'
+          writeOnly: true
+
+    PartnerInvitationAcceptance:
+      allOf:
+        - $ref: '#/components/schemas/PartnerInvitationToken'
+        - type: object
+          additionalProperties: false
+          required: [token, password, legal]
+          properties:
+            token: {type: string, pattern: '^[A-Za-z0-9_-]{40,100}$', writeOnly: true}
+            password: {type: string, minLength: 8, maxLength: 128, writeOnly: true}
+            legal:
+              type: object
+              additionalProperties: false
+              required: [termsVersion, privacyVersion, termsAccepted, privacyAccepted]
+              properties:
+                termsVersion: {type: string, minLength: 1, maxLength: 100}
+                privacyVersion: {type: string, minLength: 1, maxLength: 100}
+                termsAccepted: {type: boolean, const: true}
+                privacyAccepted: {type: boolean, const: true}
+
+    PartnerInvitationPreview:
+      type: object
+      required: [venueTitle, city, contactName, expiresAt]
+      properties:
+        venueTitle: {type: string}
+        city: {type: string}
+        contactName: {type: string}
+        expiresAt: {type: string, format: date-time}
+
+    PartnerInvitationReceipt:
+      type: object
+      required: [invitationId, activationUrl, expiresAt, delivery]
+      properties:
+        invitationId: {type: string, format: uuid}
+        activationUrl: {type: string, format: uri, writeOnly: true}
+        expiresAt: {type: string, format: date-time}
+        delivery:
+          oneOf:
+            - $ref: '#/components/schemas/NotificationDelivery'
+            - type: 'null'
+
+    PartnerActivationSession:
+      allOf:
+        - $ref: '#/components/schemas/AuthSession'
+        - type: object
+          required: [venue]
+          properties:
+            venue:
+              type: object
+              required: [id, title]
+              properties:
+                id: {type: string, format: uuid}
+                title: {type: string}
+
+    PartnerActivationChallenge:
+      allOf:
+        - $ref: '#/components/schemas/TwoFactorChallenge'
+        - type: object
+          required: [venue]
+          properties:
+            venue:
+              type: object
+              required: [id, title]
+              properties:
+                id: {type: string, format: uuid}
+                title: {type: string}
+
+    TwoFactorChallenge:
+      type: object
+      additionalProperties: false
+      required: [twoFactorRequired, setupRequired, challengeToken, expiresIn]
+      properties:
+        twoFactorRequired: {type: boolean, const: true}
+        setupRequired: {type: boolean}
+        challengeToken: {type: string, writeOnly: true}
+        expiresIn: {type: integer, const: 300, description: Seconds}
+        setup:
+          type: object
+          additionalProperties: false
+          required: [secret, otpAuthUrl, qrDataUrl]
+          properties:
+            secret: {type: string, writeOnly: true, description: Base32 secret shown only during initial setup.}
+            otpAuthUrl: {type: string, writeOnly: true}
+            qrDataUrl: {type: string, writeOnly: true}
+
+    TwoFactorSession:
+      allOf:
+        - $ref: '#/components/schemas/AuthSession'
+        - type: object
+          required: [recoveryCodes, usedRecoveryCode]
+          properties:
+            recoveryCodes:
+              type: [array, 'null']
+              description: Eight one-time codes returned only after initial enrollment.
+              items: {type: string}
+            usedRecoveryCode: {type: boolean}
+
+    TwoFactorStatus:
+      type: object
+      additionalProperties: false
+      required: [required, enabled, enabledAt, recoveryCodesRemaining]
+      properties:
+        required: {type: boolean}
+        enabled: {type: boolean}
+        enabledAt: {type: [string, 'null'], format: date-time}
+        recoveryCodesRemaining: {type: integer, minimum: 0, maximum: 8}
+
+    TwoFactorRecoveryAccepted:
+      type: object
+      additionalProperties: false
+      required: [accepted, requestId, expiresAt, expiresIn]
+      properties:
+        accepted: {type: boolean, const: true}
+        requestId: {type: string, format: uuid}
+        expiresAt: {type: string, format: date-time}
+        expiresIn: {type: integer, const: 86400, description: Seconds}
+
+    TwoFactorRecoveryRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - status
+        - requestIp
+        - requestUserAgent
+        - expiresAt
+        - reviewedBy
+        - reviewComment
+        - reviewedAt
+        - createdAt
+        - updatedAt
+        - user
+      properties:
+        id: {type: string, format: uuid}
+        userId: {type: string, format: uuid}
+        status: {type: string, enum: [pending, approved, rejected, expired]}
+        requestIp: {type: [string, 'null']}
+        requestUserAgent: {type: [string, 'null']}
+        expiresAt: {type: string, format: date-time}
+        reviewedBy: {type: [string, 'null'], format: uuid}
+        reviewComment: {type: string}
+        reviewedAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        user:
+          oneOf:
+            - $ref: '#/components/schemas/User'
+            - type: 'null'
 
     User:
       type: object
@@ -2084,11 +2748,12 @@ components:
 
     UserSession:
       type: object
-      required: [id, expiresAt, createdAt, lastSeenAt, current]
+      required: [id, secondFactorVerified, expiresAt, createdAt, lastSeenAt, current]
       properties:
         id: {type: string, format: uuid}
         userAgent: {type: [string, 'null']}
         ip: {type: [string, 'null']}
+        secondFactorVerified: {type: boolean}
         expiresAt: {type: string, format: date-time}
         createdAt: {type: string, format: date-time}
         lastSeenAt: {type: string, format: date-time}
@@ -2242,7 +2907,7 @@ components:
 
     PartnerRoom:
       type: object
-      required: [id, slug, venueId, title, subtitle, type, capacityMin, capacityMax, pricePerHour, minimumHours, description, rules, features, tags, photoPaths, services, opensAtHour, closesAtHour, bufferMinutes, publicationStatus]
+      required: [id, slug, venueId, title, subtitle, type, capacityMin, capacityMax, pricePerHour, minimumHours, description, rules, features, tags, photoPaths, services, priceRules, opensAtHour, closesAtHour, bufferMinutes, publicationStatus]
       properties:
         id: {type: string, format: uuid}
         slug: {type: string}
@@ -2263,6 +2928,7 @@ components:
         tags: {type: array, items: {type: string}}
         photoPaths: {type: array, items: {type: string}}
         services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+        priceRules: {type: array, items: {$ref: '#/components/schemas/RoomPriceRule'}}
         opensAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
         closesAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
         bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
@@ -2303,6 +2969,10 @@ components:
               name: {type: string}
               description: {type: string}
               price: {type: number, minimum: 0}
+        priceRules:
+          type: array
+          maxItems: 30
+          items: {$ref: '#/components/schemas/RoomPriceRuleWrite'}
         status: {type: string, enum: [review, published, hidden]}
 
     RoomSummary:
@@ -2338,6 +3008,7 @@ components:
             closesAtHour: {type: number, minimum: 0, maximum: 48, multipleOf: 0.5}
             bufferMinutes: {type: integer, enum: [0, 15, 30, 45, 60]}
             services: {type: array, items: {$ref: '#/components/schemas/RoomService'}}
+            priceRules: {type: array, items: {$ref: '#/components/schemas/RoomPriceRule'}}
             availability: {$ref: '#/components/schemas/AvailabilityResponse'}
 
     RoomWrite:
@@ -2364,6 +3035,32 @@ components:
         name: {type: string}
         description: {type: [string, 'null']}
         price: {type: number, minimum: 0}
+
+    RoomPriceRule:
+      type: object
+      required: [id, label, weekdays, startsAtHour, endsAtHour, pricePerHour, priority, active]
+      properties:
+        id: {type: string, format: uuid}
+        label: {type: string}
+        weekdays: {type: array, minItems: 1, maxItems: 7, uniqueItems: true, items: {type: integer, minimum: 1, maximum: 7}}
+        startsAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        endsAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
+        pricePerHour: {type: number, minimum: 0}
+        priority: {type: integer, minimum: 0}
+        active: {type: boolean}
+
+    RoomPriceRuleWrite:
+      type: object
+      additionalProperties: false
+      required: [label, weekdays, startsAtHour, endsAtHour, pricePerHour, active]
+      properties:
+        id: {type: string}
+        label: {type: string, minLength: 1, maxLength: 160}
+        weekdays: {type: array, minItems: 1, maxItems: 7, uniqueItems: true, items: {type: integer, minimum: 1, maximum: 7}}
+        startsAtHour: {type: number, minimum: 0, maximum: 23.5, multipleOf: 0.5}
+        endsAtHour: {type: number, minimum: 0.5, maximum: 30, multipleOf: 0.5}
+        pricePerHour: {type: number, minimum: 0}
+        active: {type: boolean}
 
     RoomSearchResult:
       type: object
@@ -2453,6 +3150,116 @@ components:
         startsAt: {type: string, format: date-time}
         maximumDurationMinutes: {type: integer, minimum: 30, multipleOf: 30}
         exactMatch: {type: boolean}
+
+    PlanningPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [roomSets, date, preferredTime, durationMinutes, guests]
+      properties:
+        roomSets:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/PlanningRoomSet'
+        date: {type: string, format: date}
+        preferredTime: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}
+        durationMinutes: {type: integer, minimum: 30, maximum: 720, multipleOf: 15}
+        guests: {type: integer, minimum: 1, maximum: 1000}
+        maxTotalPriceRub: {type: number, minimum: 0, maximum: 100000000}
+        maxVariants: {type: integer, minimum: 1, maximum: 20, default: 10}
+        maxVariantsPerRoomSet: {type: integer, minimum: 1, maximum: 10, description: Maximum returned start-time variants for each room set.}
+        requiredFeatures: {type: array, maxItems: 50, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+        requestedServiceIds: {type: array, maxItems: 50, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 100}}
+
+    PlanningRoomSet:
+      type: object
+      additionalProperties: false
+      required: [id, roomIds]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_-]+$'}
+        roomIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 100}
+
+    PlanningPreviewResponse:
+      type: object
+      required: [algorithmVersion, constraintSetHash, candidatesEvaluated, exactCandidateAvailable, variants, rejections, date, timezone]
+      properties:
+        algorithmVersion: {type: string, const: 0.2.0}
+        constraintSetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        candidatesEvaluated: {type: integer, minimum: 0}
+        exactCandidateAvailable: {type: boolean}
+        variants:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PlanningVariant'}
+        rejections:
+          type: array
+          items: {$ref: '#/components/schemas/PlanningRejection'}
+        date: {type: string, format: date}
+        timezone: {type: string, const: Europe/Moscow}
+
+    PlanningVariant:
+      type: object
+      required: [rank, roomSetId, roomIds, startsAt, maximumDurationMinutes, exactStart, totalPriceRub, roomPriceRub, servicesPriceRub, totalCapacity, score, components, reasons]
+      properties:
+        rank: {type: integer, minimum: 1, maximum: 20}
+        roomSetId: {type: string}
+        roomIds: {type: array, minItems: 1, items: {type: string}}
+        startsAt: {type: string, format: date-time}
+        maximumDurationMinutes: {type: integer, minimum: 30}
+        exactStart: {type: boolean}
+        totalPriceRub: {type: number, minimum: 0}
+        roomPriceRub: {type: number, minimum: 0}
+        servicesPriceRub: {type: number, minimum: 0}
+        totalCapacity: {type: integer, minimum: 1}
+        score: {type: number, minimum: 0, maximum: 1}
+        components:
+          type: object
+          required: [timeShift, fragmentation, price, capacitySlack]
+          properties:
+            timeShift: {$ref: '#/components/schemas/PlanningComponent'}
+            fragmentation: {$ref: '#/components/schemas/PlanningComponent'}
+            price: {$ref: '#/components/schemas/PlanningComponent'}
+            capacitySlack: {$ref: '#/components/schemas/PlanningComponent'}
+        reasons:
+          type: array
+          minItems: 2
+          items: {$ref: '#/components/schemas/PlanningReason'}
+
+    PlanningComponent:
+      type: object
+      required: [raw, normalized, weight, contribution, unit]
+      properties:
+        raw: {type: number}
+        normalized: {type: number, minimum: 0, maximum: 1}
+        weight: {type: number, minimum: 0, maximum: 1}
+        contribution: {type: number, minimum: 0, maximum: 1}
+        unit: {type: string, enum: [minutes, rub, ratio]}
+
+    PlanningReason:
+      type: object
+      required: [code, value]
+      properties:
+        code:
+          type: string
+          enum: [EXACT_START, SHIFTED_START, PRESERVES_SCHEDULE, REDUCES_FRAGMENTATION, CREATES_SHORT_GAP, LOWEST_PRICE, CAPACITY_MATCH, REQUIRED_FEATURES_MATCH, SERVICES_INCLUDED, DYNAMIC_PRICE]
+        value: {type: [number, 'null']}
+
+    PlanningRejection:
+      type: object
+      required: [roomSetId, codes]
+      properties:
+        roomSetId: {type: string}
+        codes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [CAPACITY, MINIMUM_DURATION, PRICE_LIMIT, NO_COMMON_WINDOW, REQUIRED_FEATURES, SERVICE_UNAVAILABLE]}
 
     BookingCreate:
       type: object

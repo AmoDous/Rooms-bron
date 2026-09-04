@@ -1,11 +1,22 @@
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AuthConflictError, AuthService, MemoryAuthRepository, normalizeRussianPhone, passwordResetLifetimeSeconds, type AuthRepository, type IssuedAuthSession } from "./auth.js";
+import {
+  AuthConflictError,
+  AuthService,
+  hashPassword,
+  MemoryAuthRepository,
+  normalizeRussianPhone,
+  passwordResetLifetimeSeconds,
+  publicUser,
+  type AuthRepository,
+  type IssuedAuthSession,
+  type UserRole,
+} from "./auth.js";
 import { MemoryBookingRepository, type BookingRecord, type BookingRepository, type BookingStatusGroup, type PartnerBookingStatusGroup } from "./bookings.js";
 import { MemoryCatalogRepository, type CatalogRepository } from "./catalog.js";
 import { MemoryPaymentRepository, type PaymentRecord, type PaymentRepository } from "./payments.js";
@@ -25,6 +36,7 @@ import {
   type NotificationDeliveryQuery,
   type NotificationDeliveryStatus,
   type NotificationRepository,
+  type PublicNotificationDelivery,
 } from "./notifications.js";
 import {
   MemoryPartnerCatalogRepository,
@@ -66,7 +78,38 @@ import {
 } from "./finance.js";
 import { MemoryFiscalReceiptRepository, type FiscalReceiptRepository } from "./receipts.js";
 import { MemoryRefundRepository, type RefundRepository } from "./refunds.js";
+import {
+  MemoryPartnerLeadRepository,
+  PartnerLeadConflictError,
+  PartnerLeadStateError,
+  type PartnerLeadQueryStatus,
+  type PartnerLeadRepository,
+  type PartnerLeadStatus,
+} from "./partnerLeads.js";
+import {
+  MemoryPartnerInvitationRepository,
+  PartnerInvitationError,
+  partnerInvitationLifetimeSeconds,
+  type PartnerInvitationRepository,
+} from "./partnerInvitations.js";
+import {
+  MemoryTwoFactorRepository,
+  TwoFactorCipher,
+  TwoFactorError,
+  TwoFactorService,
+  twoFactorRecoveryLifetimeSeconds,
+  type TwoFactorRecoveryDecision,
+  type TwoFactorRecoveryQueryStatus,
+  type TwoFactorRecoveryRecord,
+  type TwoFactorRepository,
+} from "./twoFactor.js";
+import {
+  AuthRateLimiter,
+  MemoryRateLimitRepository,
+  type RateLimitRepository,
+} from "./rateLimits.js";
 import { availabilityForRoom, intersectAvailability, isIsoDate, MOSCOW_TIMEZONE, moscowToday } from "./availability.js";
+import { planBooking, roomPriceForBooking } from "./planning.js";
 import type {
   AvailabilityWindow,
   PublicReviewPage,
@@ -88,6 +131,10 @@ interface AppConfig {
   paymentRepository: PaymentRepository;
   reservationRepository: PartnerReservationRepository;
   partnerCatalogRepository: PartnerCatalogRepository;
+  partnerLeadRepository: PartnerLeadRepository;
+  partnerInvitationRepository: PartnerInvitationRepository;
+  twoFactorRepository: TwoFactorRepository;
+  rateLimitRepository: RateLimitRepository;
   notificationRepository: NotificationRepository;
   reviewRepository: ReviewRepository;
   supportRepository: SupportRepository;
@@ -95,7 +142,11 @@ interface AppConfig {
   receiptRepository: FiscalReceiptRepository;
   refundRepository: RefundRepository;
   photoStorage: PhotoStorage;
+  backupStatusFile: string | null;
   authTokenSecret: string;
+  rateLimitHashKey: string;
+  twoFactorEncryptionKey: string;
+  enforceTwoFactor: boolean;
   notificationEncryptionKey: string;
   productionMode: boolean;
   secureCookies: boolean;
@@ -135,6 +186,19 @@ interface AvailabilityBody {
   guests?: number;
 }
 
+interface PlanningPreviewBody {
+  roomSets: Array<{ id: string; roomIds: string[] }>;
+  date: string;
+  preferredTime: string;
+  durationMinutes: number;
+  guests: number;
+  maxTotalPriceRub?: number;
+  maxVariants?: number;
+  maxVariantsPerRoomSet?: number;
+  requiredFeatures?: string[];
+  requestedServiceIds?: string[];
+}
+
 interface ClientRegistrationBody {
   name: string;
   email: string;
@@ -151,6 +215,29 @@ interface ClientRegistrationBody {
 interface LoginBody {
   login: string;
   password: string;
+}
+
+interface TwoFactorCompleteBody {
+  challengeToken: string;
+  code: string;
+}
+
+interface TwoFactorRecoveryRequestBody {
+  challengeToken: string;
+}
+
+interface TwoFactorRecoveryQuerystring {
+  status?: TwoFactorRecoveryQueryStatus;
+  limit?: number;
+}
+
+interface TwoFactorRecoveryParams {
+  recoveryId: string;
+}
+
+interface TwoFactorRecoveryDecisionBody {
+  status: TwoFactorRecoveryDecision;
+  comment?: string;
 }
 
 interface PasswordResetRequestBody {
@@ -392,6 +479,52 @@ interface AdminModerationDecisionBody {
   comment?: string;
 }
 
+interface PartnerLeadBody {
+  city: string;
+  venueTitle: string;
+  address: string;
+  contactName: string;
+  contactPhone: string;
+  contactEmail: string;
+  venueType: string;
+  roomCount: number;
+  comment: string;
+  legal: {
+    termsVersion: string;
+    privacyVersion: string;
+    termsAccepted: true;
+    privacyAccepted: true;
+  };
+}
+
+interface AdminPartnerLeadQuerystring {
+  status?: PartnerLeadQueryStatus;
+  limit?: number;
+}
+
+interface AdminPartnerLeadParams {
+  leadId: string;
+}
+
+interface AdminPartnerLeadDecisionBody {
+  status: Exclude<PartnerLeadStatus, "new">;
+  comment?: string;
+}
+
+interface PartnerInvitationTokenBody {
+  token: string;
+}
+
+interface PartnerInvitationAcceptBody extends PartnerInvitationTokenBody {
+  password: string;
+  legal: {
+    termsVersion: string;
+    privacyVersion: string;
+    termsAccepted: true;
+    privacyAccepted: true;
+  };
+}
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const assetContentTypes: Readonly<Record<string, string>> = {
   jpg: "image/jpeg",
@@ -496,6 +629,22 @@ const partnerRoomWriteSchema = {
         },
       },
     },
+    priceRules: {
+      type: "array", maxItems: 30,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["label", "weekdays", "startsAtHour", "endsAtHour", "pricePerHour", "active"],
+        properties: {
+          id: { type: "string", maxLength: 100 },
+          label: { type: "string", minLength: 1, maxLength: 160 },
+          weekdays: { type: "array", minItems: 1, maxItems: 7, uniqueItems: true, items: { type: "integer", minimum: 1, maximum: 7 } },
+          startsAtHour: { type: "number", minimum: 0, maximum: 23.5, multipleOf: 0.5 },
+          endsAtHour: { type: "number", minimum: 0.5, maximum: 30, multipleOf: 0.5 },
+          pricePerHour: { type: "number", minimum: 0, maximum: 100_000_000 },
+          active: { type: "boolean" },
+        },
+      },
+    },
     status: { type: "string", enum: ["review", "published", "hidden"] },
   },
 } as const;
@@ -546,6 +695,79 @@ const partnerScheduleExceptionWriteSchema = {
     note: { type: "string", maxLength: 500 },
   },
 } as const;
+const partnerLeadBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "city", "venueTitle", "address", "contactName", "contactPhone", "contactEmail",
+    "venueType", "roomCount", "comment", "legal",
+  ],
+  properties: {
+    city: { type: "string", minLength: 2, maxLength: 120 },
+    venueTitle: { type: "string", minLength: 2, maxLength: 180 },
+    address: { type: "string", minLength: 3, maxLength: 300 },
+    contactName: { type: "string", minLength: 2, maxLength: 120 },
+    contactPhone: { type: "string", minLength: 10, maxLength: 30 },
+    contactEmail: { type: "string", minLength: 5, maxLength: 320 },
+    venueType: { type: "string", minLength: 2, maxLength: 120 },
+    roomCount: { type: "integer", minimum: 1, maximum: 100 },
+    comment: { type: "string", maxLength: 2000 },
+    legal: {
+      type: "object",
+      additionalProperties: false,
+      required: ["termsVersion", "privacyVersion", "termsAccepted", "privacyAccepted"],
+      properties: {
+        termsVersion: { type: "string", minLength: 1, maxLength: 80 },
+        privacyVersion: { type: "string", minLength: 1, maxLength: 80 },
+        termsAccepted: { const: true },
+        privacyAccepted: { const: true },
+      },
+    },
+  },
+} as const;
+const adminPartnerLeadParamsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["leadId"],
+  properties: { leadId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } },
+} as const;
+const adminPartnerLeadDecisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["status"],
+  properties: {
+    status: { type: "string", enum: ["review", "approved", "rejected"] },
+    comment: { type: "string", maxLength: 1000 },
+  },
+} as const;
+const partnerInvitationTokenSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["token"],
+  properties: {
+    token: { type: "string", pattern: "^[A-Za-z0-9_-]{40,100}$" },
+  },
+} as const;
+const partnerInvitationAcceptSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["token", "password", "legal"],
+  properties: {
+    token: partnerInvitationTokenSchema.properties.token,
+    password: { type: "string", minLength: 8, maxLength: 128 },
+    legal: {
+      type: "object",
+      additionalProperties: false,
+      required: ["termsVersion", "privacyVersion", "termsAccepted", "privacyAccepted"],
+      properties: {
+        termsVersion: { type: "string", minLength: 1, maxLength: 100 },
+        privacyVersion: { type: "string", minLength: 1, maxLength: 100 },
+        termsAccepted: { const: true },
+        privacyAccepted: { const: true },
+      },
+    },
+  },
+} as const;
 
 class ApiError extends Error {
   constructor(
@@ -558,52 +780,42 @@ class ApiError extends Error {
   }
 }
 
-class AuthAttemptLimiter {
-  private readonly entries = new Map<string, { failures: number; resetAt: number }>();
-
-  constructor(
-    private readonly maxFailures = 5,
-    private readonly windowMs = 10 * 60 * 1000,
-    private readonly maxEntries = 20_000,
-  ) {}
-
-  blocked(key: string): boolean {
-    const entry = this.entries.get(key);
-    if (!entry || entry.resetAt <= Date.now()) {
-      this.entries.delete(key);
-      return false;
-    }
-    return entry.failures >= this.maxFailures;
-  }
-
-  fail(key: string): void {
-    if (this.entries.size >= this.maxEntries && !this.entries.has(key)) this.prune();
-    const current = this.entries.get(key);
-    this.entries.set(key, current && current.resetAt > Date.now()
-      ? { ...current, failures: current.failures + 1 }
-      : { failures: 1, resetAt: Date.now() + this.windowMs });
-  }
-
-  clear(key: string): void {
-    this.entries.delete(key);
-  }
-
-  private prune(): void {
-    const now = Date.now();
-    for (const [key, entry] of this.entries) {
-      if (entry.resetAt <= now) this.entries.delete(key);
-    }
-    while (this.entries.size >= this.maxEntries) {
-      const oldest = this.entries.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.entries.delete(oldest);
-    }
-  }
-}
-
 function loginAttemptKey(login: string): string {
   const normalized = normalizeRussianPhone(login) ?? login.trim().toLocaleLowerCase("ru-RU");
   return createHash("sha256").update(normalized).digest("hex");
+}
+
+function maskedIp(value: string | null): string {
+  const ip = String(value ?? "").trim();
+  if (!ip) return "не определён";
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(ip)) return `${ip.split(".").slice(0, 3).join(".")}.x`;
+  if (ip.includes(":")) return `${ip.split(":").filter(Boolean).slice(0, 3).join(":")}::`;
+  return "скрыт";
+}
+
+function deviceLabel(userAgent: string | null): string {
+  const value = String(userAgent ?? "");
+  const browser = /Edg\//u.test(value)
+    ? "Microsoft Edge"
+    : /Firefox\//u.test(value)
+      ? "Firefox"
+      : /Chrome\//u.test(value)
+        ? "Chrome"
+        : /Safari\//u.test(value)
+          ? "Safari"
+          : "неизвестный браузер";
+  const platform = /Android/u.test(value)
+    ? "Android"
+    : /iPhone|iPad/u.test(value)
+      ? "iPhone/iPad"
+      : /Windows/u.test(value)
+        ? "Windows"
+        : /Macintosh/u.test(value)
+          ? "macOS"
+          : /Linux/u.test(value)
+            ? "Linux"
+            : "неизвестное устройство";
+  return `${browser}, ${platform}`;
 }
 
 function email(value: string): string | null {
@@ -691,7 +903,7 @@ async function presentRoom(
   if (!venue) throw new ApiError(404, "VENUE_NOT_FOUND", "Площадка помещения не найдена.");
   const nearestWindows = date
     ? (() => {
-        const windows = availabilityForRoom(room, date, durationMinutes, preferredTime);
+        const windows = availabilityForRoom(room, date, durationMinutes, preferredTime, 30, room.bufferMinutes, room.bufferMinutes);
         const exact = windows.find((window) => window.exactMatch);
         return exact ? [exact, ...windows.filter((window) => window !== exact).slice(0, 3)] : windows.slice(0, 4);
       })()
@@ -747,6 +959,26 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     ?? (bookingRepository instanceof MemoryBookingRepository ? new MemoryPartnerReservationRepository(bookingRepository, repository) : null);
   if (!reservationRepository) throw new Error("reservationRepository is required with a non-memory booking repository.");
   const partnerCatalogRepository = overrides.partnerCatalogRepository ?? new MemoryPartnerCatalogRepository();
+  const partnerLeadRepository = overrides.partnerLeadRepository ?? new MemoryPartnerLeadRepository();
+  const authRepository = overrides.authRepository ?? new MemoryAuthRepository();
+  const twoFactorRepository = overrides.twoFactorRepository ?? new MemoryTwoFactorRepository();
+  const rateLimitRepository = overrides.rateLimitRepository ?? new MemoryRateLimitRepository();
+  const partnerInvitationRepository = overrides.partnerInvitationRepository
+    ?? (
+      authRepository instanceof MemoryAuthRepository
+      && bookingRepository instanceof MemoryBookingRepository
+      && partnerCatalogRepository instanceof MemoryPartnerCatalogRepository
+        ? new MemoryPartnerInvitationRepository(
+            partnerLeadRepository,
+            authRepository,
+            bookingRepository,
+            partnerCatalogRepository,
+          )
+        : null
+    );
+  if (!partnerInvitationRepository) {
+    throw new Error("partnerInvitationRepository is required with non-memory authentication, booking or partner catalog repositories.");
+  }
   const reviewRepository = overrides.reviewRepository ?? new MemoryReviewRepository(bookingRepository, repository);
   const supportRepository = overrides.supportRepository ?? new MemorySupportRepository(bookingRepository);
   const financeRepository = overrides.financeRepository ?? new MemoryFinanceRepository(bookingRepository, supportRepository);
@@ -758,11 +990,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     corsOrigins: overrides.corsOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001", "http://localhost:4173", "http://127.0.0.1:4173", "https://amodous.github.io"],
     logger: overrides.logger ?? false,
     repository,
-    authRepository: overrides.authRepository ?? new MemoryAuthRepository(),
+    authRepository,
     bookingRepository,
     paymentRepository,
     reservationRepository,
     partnerCatalogRepository,
+    partnerLeadRepository,
+    partnerInvitationRepository,
+    twoFactorRepository,
+    rateLimitRepository,
     notificationRepository: overrides.notificationRepository ?? new MemoryNotificationRepository(),
     reviewRepository,
     supportRepository,
@@ -770,7 +1006,11 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     receiptRepository,
     refundRepository,
     photoStorage: overrides.photoStorage ?? new MemoryPhotoStorage(),
+    backupStatusFile: overrides.backupStatusFile ?? null,
     authTokenSecret: overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
+    rateLimitHashKey: overrides.rateLimitHashKey ?? overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
+    twoFactorEncryptionKey: overrides.twoFactorEncryptionKey ?? overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
+    enforceTwoFactor: overrides.enforceTwoFactor ?? false,
     notificationEncryptionKey: overrides.notificationEncryptionKey ?? overrides.authTokenSecret ?? "rooms-local-development-secret-change-me-2026",
     productionMode: overrides.productionMode ?? false,
     secureCookies: overrides.secureCookies ?? false,
@@ -778,18 +1018,88 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     exposePasswordResetToken: overrides.exposePasswordResetToken ?? false,
   };
   const app = Fastify({ logger: config.logger });
+  const operationsStartedAt = Date.now();
+  const requestStartedAt = new WeakMap<FastifyRequest, number>();
+  const requestMetrics = {
+    total: 0,
+    inFlight: 0,
+    durationTotalMs: 0,
+    durationMaxMs: 0,
+    slow: 0,
+    byStatus: { success: 0, redirect: 0, clientError: 0, serverError: 0 },
+    lastError: null as null | { at: string; code: string; statusCode: number },
+  };
   void app.register(multipart, {
     limits: { files: 1, fields: 2, fileSize: MAX_PHOTO_BYTES },
   });
-  const auth = new AuthService(config.authRepository, config.authTokenSecret);
+  const protectedRoles: readonly UserRole[] = config.enforceTwoFactor ? ["partner", "admin", "accountant"] : [];
+  const auth = new AuthService(config.authRepository, config.authTokenSecret, protectedRoles);
+  const twoFactor = new TwoFactorService(
+    config.twoFactorRepository,
+    new TwoFactorCipher(config.twoFactorEncryptionKey),
+    protectedRoles,
+  );
   const notifications = new NotificationService(
     config.notificationRepository,
     new NotificationCipher(config.notificationEncryptionKey),
   );
-  const loginAccountAttempts = new AuthAttemptLimiter(5);
-  const loginIpAttempts = new AuthAttemptLimiter(30);
-  const passwordResetAttempts = new AuthAttemptLimiter();
-  const passwordResetConfirmAttempts = new AuthAttemptLimiter();
+  const loginAccountAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "login_account",
+    config.rateLimitHashKey,
+    5,
+  );
+  const loginIpAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "login_ip",
+    config.rateLimitHashKey,
+    30,
+  );
+  const passwordResetAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "password_reset_request_ip",
+    config.rateLimitHashKey,
+  );
+  const passwordResetConfirmAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "password_reset_confirm_ip",
+    config.rateLimitHashKey,
+  );
+  const partnerLeadIpAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "partner_lead_ip",
+    config.rateLimitHashKey,
+    10,
+    60 * 60 * 1000,
+  );
+  const planningIpAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "planning_preview_ip",
+    config.rateLimitHashKey,
+    100,
+    60 * 1000,
+  );
+  const partnerInvitationAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "partner_invitation_ip",
+    config.rateLimitHashKey,
+    10,
+    15 * 60 * 1000,
+  );
+  const twoFactorIpAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "two_factor_ip",
+    config.rateLimitHashKey,
+    20,
+    10 * 60 * 1000,
+  );
+  const twoFactorRecoveryIpAttempts = new AuthRateLimiter(
+    config.rateLimitRepository,
+    "two_factor_recovery_ip",
+    config.rateLimitHashKey,
+    3,
+    60 * 60 * 1000,
+  );
 
   const queueNotification = async (label: string, task: () => Promise<unknown>): Promise<void> => {
     try {
@@ -825,6 +1135,37 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
         if (venue) await notifications.rememberVenueRecipient(venue.id, user);
       }
     });
+  };
+
+  const queueLoginNotification = (
+    session: IssuedAuthSession,
+    ip: string | null,
+    userAgent: string | null,
+  ): Promise<void> => queueNotification("security_login", () => notifications.enqueueUser(session.user, {
+    eventKey: "security_login",
+    title: "Новый вход в Rooms",
+    body: `${deviceLabel(userAgent)} · IP ${maskedIp(ip)}. Если это были не вы, смените пароль и завершите остальные сессии в кабинете.`,
+    dedupeKey: `security-login|${session.sessionId}`,
+  }));
+
+  const queueSuspiciousLoginNotification = (
+    user: IssuedAuthSession["user"],
+    ip: string | null,
+    userAgent: string | null,
+    accountKey: string,
+  ): Promise<void> => queueNotification("security_login_failed", () => notifications.enqueueUser(user, {
+    eventKey: "security_login_failed",
+    title: "Несколько неудачных попыток входа",
+    body: `${deviceLabel(userAgent)} · IP ${maskedIp(ip)}. Rooms временно ограничил подбор пароля. Если это были не вы, смените пароль.`,
+    dedupeKey: `security-login-failed|${accountKey}|${Math.floor(Date.now() / (10 * 60 * 1000))}`,
+  }));
+
+  const publicRecoveryRecord = async (record: TwoFactorRecoveryRecord) => {
+    const target = await config.authRepository.findUserById(record.userId);
+    return {
+      ...record,
+      user: target ? publicUser(target) : null,
+    };
   };
 
   const requirePartnerVenue = async (authorization: string | undefined) => {
@@ -910,6 +1251,11 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     if (body.closesAtHour <= body.opensAtHour) {
       throw new ApiError(400, "INVALID_ROOM_SCHEDULE", "Закрытие помещения должно быть позже открытия.");
     }
+    for (const rule of body.priceRules ?? []) {
+      if (rule.endsAtHour <= rule.startsAtHour) {
+        throw new ApiError(400, "INVALID_PRICE_RULE", `В тарифе «${rule.label}» конец должен быть позже начала.`);
+      }
+    }
     return body;
   };
 
@@ -946,11 +1292,12 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       body.durationMinutes,
       localStart.time,
     );
-    if (!windows.some((window) => new Date(window.startsAt).getTime() === startsAt.getTime())) {
+    const selectedWindow = windows.find((window) => new Date(window.startsAt).getTime() === startsAt.getTime());
+    if (!selectedWindow) {
       throw new ApiError(409, "SLOT_UNAVAILABLE", "Это время уже недоступно. Выберите другое окно.", windows.slice(0, 6));
     }
-    const hours = body.durationMinutes / 60;
-    const roomTotal = moneyAmount(booking.rooms.reduce((sum, room) => sum + room.pricePerHour * hours, 0));
+    const roomTotal = moneyAmount(selectedRooms.reduce((sum, room) => sum
+      + roomPriceForBooking(room, localStart.date, selectedWindow.startsAt, body.durationMinutes), 0));
     const serviceTotal = booking.money.serviceTotal;
     const total = moneyAmount(roomTotal + serviceTotal);
     const prepayment = Math.ceil(total * 0.3);
@@ -1020,6 +1367,36 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     credentials: true,
   });
 
+  app.addHook("onRequest", async (request) => {
+    requestMetrics.total += 1;
+    requestMetrics.inFlight += 1;
+    requestStartedAt.set(request, Date.now());
+  });
+
+  app.addHook("onError", async (_request, reply, error) => {
+    const statusCode = typeof error.statusCode === "number"
+      ? error.statusCode
+      : reply.statusCode >= 400 ? reply.statusCode : 500;
+    requestMetrics.lastError = {
+      at: new Date().toISOString(),
+      code: typeof error.code === "string" ? error.code : "INTERNAL_ERROR",
+      statusCode,
+    };
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    const duration = Math.max(0, Date.now() - (requestStartedAt.get(request) ?? Date.now()));
+    requestStartedAt.delete(request);
+    requestMetrics.inFlight = Math.max(0, requestMetrics.inFlight - 1);
+    requestMetrics.durationTotalMs += duration;
+    requestMetrics.durationMaxMs = Math.max(requestMetrics.durationMaxMs, duration);
+    if (duration >= 1000) requestMetrics.slow += 1;
+    if (reply.statusCode >= 500) requestMetrics.byStatus.serverError += 1;
+    else if (reply.statusCode >= 400) requestMetrics.byStatus.clientError += 1;
+    else if (reply.statusCode >= 300) requestMetrics.byStatus.redirect += 1;
+    else requestMetrics.byStatus.success += 1;
+  });
+
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
@@ -1039,6 +1416,32 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     }
     if (error instanceof AuthConflictError) {
       return reply.status(409).send({ ...errorPayload("ACCOUNT_EXISTS", "Кабинет с такой почтой или телефоном уже существует."), requestId: request.id });
+    }
+    if (error instanceof TwoFactorError) {
+      const messages = {
+        TWO_FACTOR_CHALLENGE_UNAVAILABLE: "Проверка истекла или уже использована. Войдите ещё раз.",
+        TWO_FACTOR_CODE_INVALID: "Неверный код. Проверьте приложение-аутентификатор и попробуйте снова.",
+        TWO_FACTOR_ALREADY_ENABLED: "Двухфакторная защита для этого кабинета уже настроена.",
+        TWO_FACTOR_RECOVERY_UNAVAILABLE: "Запрос восстановления недоступен. Войдите с паролем ещё раз.",
+      } as const;
+      return reply.status(error.statusCode).send({
+        ...errorPayload(error.code, messages[error.code]),
+        requestId: request.id,
+      });
+    }
+    if (error instanceof PartnerLeadConflictError) {
+      return reply.status(409).send({ ...errorPayload(error.code, "Заявка с такой почтой или телефоном уже находится в работе."), requestId: request.id });
+    }
+    if (error instanceof PartnerLeadStateError) {
+      return reply.status(409).send({ ...errorPayload(error.code, "По заявке уже принято окончательное решение. Обновите очередь."), requestId: request.id });
+    }
+    if (error instanceof PartnerInvitationError) {
+      const messages = {
+        PARTNER_LEAD_NOT_APPROVED: "Сначала одобрите заявку площадки.",
+        PARTNER_ACCOUNT_EXISTS: "Кабинет с такой почтой или телефоном уже существует.",
+        PARTNER_INVITATION_UNAVAILABLE: "Ссылка активации недействительна или уже использована.",
+      } as const;
+      return reply.status(error.statusCode).send({ ...errorPayload(error.code, messages[error.code]), requestId: request.id });
     }
     if ("validation" in error && error.validation) {
       return reply.status(400).send({
@@ -1068,9 +1471,10 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const privateRoute = ({
       "/account": { title: "Личный кабинет — Rooms", description: "Заявки, избранные помещения и настройки профиля Rooms." },
       "/partner": { title: "Кабинет партнёра — Rooms", description: "Заявки, календарь и управление площадкой в Rooms." },
+      "/partner/activate": { title: "Активация кабинета партнёра — Rooms", description: "Безопасная активация кабинета площадки Rooms." },
       "/admin": { title: "Админка — Rooms", description: "Защищённый кабинет управления сервисом Rooms." },
       "/accounting": { title: "Бухгалтерия — Rooms", description: "Защищённый кабинет финансовых операций Rooms." },
-    } as const)[publicPath as "/account" | "/partner" | "/admin" | "/accounting"];
+    } as const)[publicPath as "/account" | "/partner" | "/partner/activate" | "/admin" | "/accounting"];
     const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
       "&": "&amp;",
       "<": "&lt;",
@@ -1080,6 +1484,20 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     })[character] ?? character);
     let html = source;
     let routeFound = true;
+    const runtimeConfig = JSON.stringify({
+      mode: config.productionMode ? "production" : "development",
+      apiBase: config.publicApiUrl.replace(/\/+$/u, ""),
+    }).replace(/[<>&\u2028\u2029]/gu, (character) => ({
+      "<": "\\u003c",
+      ">": "\\u003e",
+      "&": "\\u0026",
+      "\u2028": "\\u2028",
+      "\u2029": "\\u2029",
+    })[character] ?? character);
+    html = html.replace(
+      "</head>",
+      `<script data-rooms-runtime>window.ROOMS_CONFIG=Object.freeze(${runtimeConfig});</script>\n</head>`,
+    );
     if (privateRoute) {
       html = html
         .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(privateRoute.title)}</title>`)
@@ -1163,6 +1581,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   app.get("/for-partners", servePublicSite);
   app.get("/account", servePublicSite);
   app.get("/partner", servePublicSite);
+  app.get("/partner/activate", servePublicSite);
   app.get("/admin", servePublicSite);
   app.get("/accounting", servePublicSite);
   app.get<{ Params: { venueSlug: string } }>("/venues/:venueSlug", {
@@ -1209,11 +1628,141 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     status: "ok",
     database: config.repository.storage === "postgresql" ? "up" : "down",
     storage: config.repository.storage,
+    media: config.photoStorage.storage,
+    rateLimits: config.rateLimitRepository.storage,
     payments: config.paymentRepository.provider,
     time: new Date().toISOString(),
   }));
 
   app.get("/v1/cities", async () => config.repository.listCities());
+
+  app.post<{ Body: PartnerLeadBody }>("/v1/partner-leads", {
+    schema: { body: partnerLeadBodySchema },
+  }, async (request, reply) => {
+    const ipKey = request.ip;
+    if (await partnerLeadIpAttempts.blocked(ipKey)) {
+      throw new ApiError(429, "PARTNER_LEAD_RATE_LIMITED", "С этого адреса отправлено слишком много заявок. Попробуйте через час.");
+    }
+    const contactEmail = email(request.body.contactEmail);
+    const contactPhone = normalizeRussianPhone(request.body.contactPhone);
+    if (!contactEmail) throw new ApiError(400, "INVALID_EMAIL", "Проверьте электронную почту.");
+    if (!contactPhone) throw new ApiError(400, "INVALID_PHONE", "Укажите российский номер телефона в формате +7.");
+    const city = request.body.city.trim();
+    const venueTitle = request.body.venueTitle.trim();
+    const address = request.body.address.trim();
+    const contactName = request.body.contactName.trim();
+    const venueType = request.body.venueType.trim();
+    const termsVersion = request.body.legal.termsVersion.trim();
+    const privacyVersion = request.body.legal.privacyVersion.trim();
+    if (city.length < 2 || venueTitle.length < 2 || address.length < 3 || contactName.length < 2 || venueType.length < 2) {
+      throw new ApiError(400, "PARTNER_LEAD_FIELDS_REQUIRED", "Заполните город, площадку, адрес и контактное лицо.");
+    }
+    if (!termsVersion || !privacyVersion) throw new ApiError(400, "LEGAL_VERSION_REQUIRED", "Не удалось зафиксировать версии документов.");
+    const record = await config.partnerLeadRepository.create({
+      city,
+      venueTitle,
+      address,
+      contactName,
+      contactPhone,
+      contactEmail,
+      venueType,
+      roomCount: request.body.roomCount,
+      comment: request.body.comment.trim(),
+      termsVersion,
+      privacyVersion,
+      consentedAt: new Date().toISOString(),
+      requestIp: request.ip,
+      requestUserAgent: String(request.headers["user-agent"] ?? "").slice(0, 500) || null,
+    });
+    await partnerLeadIpAttempts.fail(ipKey);
+    return reply
+      .header("Cache-Control", "no-store")
+      .status(201)
+      .send({ id: record.id, status: record.status, createdAt: record.createdAt });
+  });
+
+  app.post<{ Body: PartnerInvitationTokenBody }>("/v1/auth/partner-invitations/preview", {
+    schema: { body: partnerInvitationTokenSchema },
+  }, async (request, reply) => {
+    const attemptKey = request.ip;
+    if (await partnerInvitationAttempts.blocked(attemptKey)) {
+      reply.header("Retry-After", "900");
+      throw new ApiError(429, "PARTNER_INVITATION_RATE_LIMITED", "Слишком много попыток. Повторите через 15 минут.");
+    }
+    const tokenHash = createHash("sha256").update(request.body.token).digest("hex");
+    const preview = await config.partnerInvitationRepository.preview(tokenHash);
+    if (!preview) {
+      await partnerInvitationAttempts.fail(attemptKey);
+      throw new PartnerInvitationError(410, "PARTNER_INVITATION_UNAVAILABLE", "The invitation is invalid, expired or already used.");
+    }
+    await partnerInvitationAttempts.clear(attemptKey);
+    return reply.header("Cache-Control", "no-store").send(preview);
+  });
+
+  app.post<{ Body: PartnerInvitationAcceptBody }>("/v1/auth/partner-invitations/accept", {
+    schema: { body: partnerInvitationAcceptSchema },
+  }, async (request, reply) => {
+    const attemptKey = request.ip;
+    if (await partnerInvitationAttempts.blocked(attemptKey)) {
+      reply.header("Retry-After", "900");
+      throw new ApiError(429, "PARTNER_INVITATION_RATE_LIMITED", "Слишком много попыток. Повторите через 15 минут.");
+    }
+    if (!/\p{L}/u.test(request.body.password) || !/\d/u.test(request.body.password)) {
+      throw new ApiError(400, "WEAK_PASSWORD", "Пароль должен содержать буквы и хотя бы одну цифру.");
+    }
+    const acceptedAt = new Date().toISOString();
+    const tokenHash = createHash("sha256").update(request.body.token).digest("hex");
+    const activated = await config.partnerInvitationRepository.activate({
+      tokenHash,
+      passwordHash: await hashPassword(request.body.password),
+      acceptedAt,
+      termsVersion: request.body.legal.termsVersion.trim(),
+      privacyVersion: request.body.legal.privacyVersion.trim(),
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null,
+    });
+    if (!activated) {
+      await partnerInvitationAttempts.fail(attemptKey);
+      throw new PartnerInvitationError(410, "PARTNER_INVITATION_UNAVAILABLE", "The invitation is invalid, expired or already used.");
+    }
+    const activatedUser = await config.authRepository.findUserById(activated.userId);
+    if (!activatedUser || activatedUser.role !== "partner" || activatedUser.blockedAt !== null) {
+      throw new ApiError(500, "PARTNER_ACTIVATION_FAILED", "Не удалось завершить активацию кабинета.");
+    }
+    await partnerInvitationAttempts.clear(attemptKey);
+    const activatedPublicUser = publicUser(activatedUser);
+    await rememberNotificationUser(activatedPublicUser);
+    await queueNotification("partner_account_activated", () => notifications.enqueueUser(activatedPublicUser, {
+      eventKey: "partner_account_activated",
+      title: "Кабинет площадки активирован",
+      body: `${activated.venueTitle}: заполните описание, добавьте помещения, фотографии и расписание.`,
+      dedupeKey: `partner-account-activated|${activatedUser.id}`,
+    }));
+    if (twoFactor.requiredFor(activatedUser.role)) {
+      const challenge = await twoFactor.begin(
+        activatedUser,
+        request.ip,
+        request.headers["user-agent"] ?? null,
+      );
+      return reply.code(202).send({
+        ...challenge,
+        venue: { id: activated.venueId, title: activated.venueTitle },
+      });
+    }
+    const session = await auth.issueSessionForUser(
+      activatedUser.id,
+      request.ip,
+      request.headers["user-agent"] ?? null,
+      false,
+    );
+    if (!session) throw new ApiError(500, "PARTNER_ACTIVATION_FAILED", "Не удалось открыть кабинет партнёра.");
+    refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
+    await queueLoginNotification(session, request.ip, request.headers["user-agent"] ?? null);
+    return reply.code(201).send({
+      ...authResponse(session),
+      venue: { id: activated.venueId, title: activated.venueTitle },
+    });
+  });
 
   app.post<{ Body: ClientRegistrationBody }>("/v1/auth/client/register", {
     schema: {
@@ -1287,20 +1836,146 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const login = request.body.login.trim();
     const accountAttemptKey = loginAttemptKey(login);
     const ipAttemptKey = request.ip;
-    if (loginAccountAttempts.blocked(accountAttemptKey) || loginIpAttempts.blocked(ipAttemptKey)) {
+    const [accountBlocked, ipBlocked] = await Promise.all([
+      loginAccountAttempts.blocked(accountAttemptKey),
+      loginIpAttempts.blocked(ipAttemptKey),
+    ]);
+    if (accountBlocked || ipBlocked) {
       reply.header("Retry-After", "600");
       throw new ApiError(429, "LOGIN_RATE_LIMITED", "Слишком много попыток. Повторите вход через 10 минут.");
     }
-    const session = await auth.login(login, request.body.password, request.ip, request.headers["user-agent"] ?? null);
-    if (!session) {
-      loginAccountAttempts.fail(accountAttemptKey);
-      loginIpAttempts.fail(ipAttemptKey);
+    const user = await auth.verifyCredentials(login, request.body.password);
+    if (!user) {
+      const [accountFailures] = await Promise.all([
+        loginAccountAttempts.fail(accountAttemptKey),
+        loginIpAttempts.fail(ipAttemptKey),
+      ]);
+      if (accountFailures === 5) {
+        const target = await config.authRepository.findUserByLogin(login, normalizeRussianPhone(login));
+        if (target && target.blockedAt === null) {
+          await queueSuspiciousLoginNotification(
+            publicUser(target),
+            request.ip,
+            request.headers["user-agent"] ?? null,
+            accountAttemptKey,
+          );
+        }
+      }
       throw new ApiError(401, "INVALID_CREDENTIALS", "Неверная почта, телефон или пароль.");
     }
-    loginAccountAttempts.clear(accountAttemptKey);
+    await loginAccountAttempts.clear(accountAttemptKey);
+    if (twoFactor.requiredFor(user.role)) {
+      const challenge = await twoFactor.begin(
+        user,
+        request.ip,
+        request.headers["user-agent"] ?? null,
+      );
+      return reply.code(202).send(challenge);
+    }
+    const session = await auth.issueSessionForUser(
+      user.id,
+      request.ip,
+      request.headers["user-agent"] ?? null,
+      false,
+    );
+    if (!session) throw new ApiError(500, "SESSION_CREATE_FAILED", "Не удалось открыть кабинет.");
     await rememberNotificationUser(session.user);
+    await queueLoginNotification(session, request.ip, request.headers["user-agent"] ?? null);
     refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
     return authResponse(session);
+  });
+
+  app.post<{ Body: TwoFactorCompleteBody }>("/v1/auth/2fa/complete", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["challengeToken", "code"],
+        properties: {
+          challengeToken: { type: "string", minLength: 32, maxLength: 200 },
+          code: { type: "string", minLength: 6, maxLength: 24 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const attemptKey = `two-factor|${request.ip}`;
+    if (await twoFactorIpAttempts.blocked(attemptKey)) {
+      reply.header("Retry-After", "600");
+      throw new ApiError(429, "TWO_FACTOR_RATE_LIMITED", "Слишком много попыток. Повторите вход через 10 минут.");
+    }
+    let completion;
+    try {
+      completion = await twoFactor.complete(request.body.challengeToken, request.body.code);
+    } catch (error) {
+      await twoFactorIpAttempts.fail(attemptKey);
+      throw error;
+    }
+    const session = await auth.issueSessionForUser(
+      completion.userId,
+      request.ip,
+      request.headers["user-agent"] ?? null,
+      true,
+    );
+    if (!session) throw new ApiError(401, "ACCOUNT_UNAVAILABLE", "Кабинет недоступен.");
+    await twoFactorIpAttempts.clear(attemptKey);
+    await rememberNotificationUser(session.user);
+    await queueLoginNotification(session, request.ip, request.headers["user-agent"] ?? null);
+    refreshCookie(reply, session.refreshToken, session.refreshExpiresIn, config.secureCookies);
+    return {
+      ...authResponse(session),
+      recoveryCodes: completion.recoveryCodes,
+      usedRecoveryCode: completion.usedRecoveryCode,
+    };
+  });
+
+  app.post<{ Body: TwoFactorRecoveryRequestBody }>("/v1/auth/2fa/recovery/request", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["challengeToken"],
+        properties: {
+          challengeToken: { type: "string", minLength: 32, maxLength: 200 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const attemptKey = `two-factor-recovery|${request.ip}`;
+    if (await twoFactorRecoveryIpAttempts.blocked(attemptKey)) {
+      reply.header("Retry-After", "3600");
+      throw new ApiError(
+        429,
+        "TWO_FACTOR_RECOVERY_RATE_LIMITED",
+        "Слишком много запросов восстановления. Повторите через час.",
+      );
+    }
+    await twoFactorRecoveryIpAttempts.fail(attemptKey);
+    const record = await twoFactor.requestRecovery(
+      request.body.challengeToken,
+      request.ip,
+      request.headers["user-agent"] ?? null,
+    );
+    const target = await config.authRepository.findUserById(record.userId);
+    if (!target || target.blockedAt !== null || !twoFactor.requiredFor(target.role)) {
+      throw new TwoFactorError(
+        410,
+        "TWO_FACTOR_RECOVERY_UNAVAILABLE",
+        "The two-factor recovery request is unavailable.",
+      );
+    }
+    const recipient = publicUser(target);
+    await queueNotification("two_factor_recovery_requested", () => notifications.enqueueUser(recipient, {
+      eventKey: "two_factor_recovery_requested",
+      title: "Запрошено восстановление входа",
+      body: `Запрос отправлен с ${deviceLabel(request.headers["user-agent"] ?? null)} · IP ${maskedIp(request.ip)}. До решения администратора вход по старому второму фактору остаётся защищённым.`,
+      dedupeKey: `two-factor-recovery-requested|${record.id}`,
+    }));
+    return reply.code(202).send({
+      accepted: true,
+      requestId: record.id,
+      expiresAt: record.expiresAt,
+      expiresIn: twoFactorRecoveryLifetimeSeconds,
+    });
   });
 
   app.post<{ Body: PasswordResetRequestBody }>("/v1/auth/password-reset/request", {
@@ -1315,10 +1990,10 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   }, async (request, reply) => {
     const login = request.body.login.trim();
     const attemptKey = `password-reset|${request.ip}`;
-    if (passwordResetAttempts.blocked(attemptKey)) {
+    if (await passwordResetAttempts.blocked(attemptKey)) {
       throw new ApiError(429, "PASSWORD_RESET_RATE_LIMITED", "Слишком много запросов. Попробуйте снова через 10 минут.");
     }
-    passwordResetAttempts.fail(attemptKey);
+    await passwordResetAttempts.fail(attemptKey);
     const reset = await auth.requestPasswordReset(login, request.ip, request.headers["user-agent"] ?? null);
     const resetUrl = new URL(config.publicSiteUrl);
     resetUrl.searchParams.set("reset", reset.token);
@@ -1351,15 +2026,15 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     },
   }, async (request, reply) => {
     const attemptKey = `password-reset-confirm|${request.ip}`;
-    if (passwordResetConfirmAttempts.blocked(attemptKey)) {
+    if (await passwordResetConfirmAttempts.blocked(attemptKey)) {
       throw new ApiError(429, "PASSWORD_RESET_RATE_LIMITED", "Слишком много попыток. Попробуйте снова через 10 минут.");
     }
     const completed = await auth.resetPassword(request.body.token, request.body.newPassword);
     if (!completed) {
-      passwordResetConfirmAttempts.fail(attemptKey);
+      await passwordResetConfirmAttempts.fail(attemptKey);
       throw new ApiError(400, "PASSWORD_RESET_INVALID", "Ссылка устарела или уже была использована.");
     }
-    passwordResetConfirmAttempts.clear(attemptKey);
+    await passwordResetConfirmAttempts.clear(attemptKey);
     clearRefreshCookie(reply, config.secureCookies);
     return reply.code(204).send();
   });
@@ -1387,6 +2062,12 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const current = await auth.authenticate(request.headers.authorization);
     if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
     return current.user;
+  });
+
+  app.get("/v1/me/two-factor", async (request) => {
+    const current = await auth.authenticate(request.headers.authorization);
+    if (!current) throw new ApiError(401, "UNAUTHORIZED", "Войдите в личный кабинет.");
+    return twoFactor.status(current.user.id, current.user.role);
   });
 
   app.get("/v1/me/notification-settings", async (request) => {
@@ -1920,7 +2601,6 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const availableServices = new Map(selectedRooms.flatMap((room) => room.services.map((service) => [service.id, service] as const)));
     const unknownService = serviceIds.find((id) => !availableServices.has(id));
     if (unknownService) throw new ApiError(400, "SERVICE_NOT_FOUND", "Одна из дополнительных услуг больше недоступна.");
-    const hours = body.durationMinutes / 60;
     const bookingRooms = selectedRooms.map((room) => ({
       id: room.id,
       slug: room.slug,
@@ -1928,7 +2608,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       type: room.type,
       capacityMax: room.capacityMax,
       pricePerHour: room.pricePerHour,
-      amount: moneyAmount(room.pricePerHour * hours),
+      amount: moneyAmount(roomPriceForBooking(room, localStart.date, selectedWindow.startsAt, body.durationMinutes)),
       isPrimary: room.id === body.primaryRoomId,
       bufferMinutes: room.bufferMinutes,
     }));
@@ -2372,6 +3052,178 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     return payout;
   });
 
+  app.get<{ Querystring: TwoFactorRecoveryQuerystring }>("/v1/admin/two-factor-recovery", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["pending", "approved", "rejected", "expired", "all"] },
+          limit: { type: "integer", minimum: 1, maximum: 200 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    await requireAdmin(request.headers.authorization);
+    const records = await twoFactor.listRecoveryRequests(
+      request.query.status ?? "all",
+      request.query.limit ?? 80,
+    );
+    return reply.header("Cache-Control", "no-store").send(await Promise.all(records.map(publicRecoveryRecord)));
+  });
+
+  app.patch<{ Params: TwoFactorRecoveryParams; Body: TwoFactorRecoveryDecisionBody }>(
+    "/v1/admin/two-factor-recovery/:recoveryId",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["recoveryId"],
+          properties: {
+            recoveryId: {
+              type: "string",
+              pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            },
+          },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["status"],
+          properties: {
+            status: { type: "string", enum: ["approved", "rejected"] },
+            comment: { type: "string", maxLength: 1000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const admin = await requireAdmin(request.headers.authorization);
+      const current = await twoFactor.getRecoveryRequest(request.params.recoveryId);
+      if (!current) throw new ApiError(404, "TWO_FACTOR_RECOVERY_NOT_FOUND", "Запрос восстановления не найден.");
+      if (current.userId === admin.id) {
+        throw new ApiError(
+          403,
+          "TWO_FACTOR_RECOVERY_SELF_APPROVAL_FORBIDDEN",
+          "Администратор не может одобрить восстановление собственного доступа.",
+        );
+      }
+      if (current.status !== "pending") {
+        throw new ApiError(409, "TWO_FACTOR_RECOVERY_ALREADY_DECIDED", "По запросу уже принято решение или срок истёк.");
+      }
+      const target = await config.authRepository.findUserById(current.userId);
+      if (!target || target.blockedAt !== null || !twoFactor.requiredFor(target.role)) {
+        throw new ApiError(409, "TWO_FACTOR_RECOVERY_TARGET_UNAVAILABLE", "Кабинет больше не подходит для восстановления.");
+      }
+      const comment = request.body.comment?.trim() ?? "";
+      if (request.body.status === "rejected" && comment.length < 5) {
+        throw new ApiError(400, "TWO_FACTOR_RECOVERY_COMMENT_REQUIRED", "Укажите причину отклонения.");
+      }
+      const result = await twoFactor.decideRecoveryRequest(
+        current.id,
+        admin.id,
+        request.body.status,
+        comment,
+      );
+      if (!result || result.record.status === "expired") {
+        throw new ApiError(409, "TWO_FACTOR_RECOVERY_ALREADY_DECIDED", "Запрос уже обработан или срок его действия истёк.");
+      }
+      if (result.factorReset) {
+        await auth.revokeAllUserSessions(target.id, result.record.reviewedAt ?? result.record.updatedAt);
+      }
+      const recipient = publicUser(target);
+      await queueNotification("two_factor_recovery_decided", () => notifications.enqueueUser(recipient, {
+        eventKey: "two_factor_recovery_decided",
+        title: result.factorReset ? "Восстановление входа одобрено" : "Восстановление входа отклонено",
+        body: result.factorReset
+          ? "Все активные сессии завершены. Войдите с паролем и заново привяжите приложение-аутентификатор."
+          : `Второй фактор не изменён.${comment ? ` Причина: ${comment}` : ""}`,
+        dedupeKey: `two-factor-recovery-decided|${result.record.id}|${result.record.status}`,
+      }));
+      return reply.header("Cache-Control", "no-store").send(await publicRecoveryRecord(result.record));
+    },
+  );
+
+  app.get<{ Querystring: AdminPartnerLeadQuerystring }>("/v1/admin/partner-leads", {
+    schema: {
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: ["new", "review", "approved", "rejected", "all"] },
+          limit: { type: "integer", minimum: 1, maximum: 200 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    await requireAdmin(request.headers.authorization);
+    const records = await config.partnerLeadRepository.list(request.query.status ?? "all", request.query.limit ?? 80);
+    const invitations = await config.partnerInvitationRepository.latestForLeads(records.map((record) => record.id));
+    const invitationsByLead = new Map(invitations.map((invitation) => [invitation.leadId, invitation]));
+    return reply.header("Cache-Control", "no-store").send(records.map((record) => ({
+      ...record,
+      invitation: invitationsByLead.get(record.id) ?? null,
+    })));
+  });
+
+  app.patch<{ Params: AdminPartnerLeadParams; Body: AdminPartnerLeadDecisionBody }>("/v1/admin/partner-leads/:leadId", {
+    schema: {
+      params: adminPartnerLeadParamsSchema,
+      body: adminPartnerLeadDecisionSchema,
+    },
+  }, async (request, reply) => {
+    const admin = await requireAdmin(request.headers.authorization);
+    const comment = request.body.comment?.trim() ?? "";
+    if (request.body.status === "rejected" && comment.length < 3) {
+      throw new ApiError(400, "PARTNER_LEAD_REJECTION_REASON_REQUIRED", "Укажите причину отклонения заявки.");
+    }
+    const record = await config.partnerLeadRepository.decide(admin.id, request.params.leadId, request.body.status, comment);
+    if (!record) throw new ApiError(404, "PARTNER_LEAD_NOT_FOUND", "Заявка площадки не найдена.");
+    return reply.header("Cache-Control", "no-store").send(record);
+  });
+
+  app.post<{ Params: AdminPartnerLeadParams }>("/v1/admin/partner-leads/:leadId/invitations", {
+    schema: { params: adminPartnerLeadParamsSchema },
+  }, async (request, reply) => {
+    const admin = await requireAdmin(request.headers.authorization);
+    const lead = await config.partnerLeadRepository.findById(request.params.leadId);
+    if (!lead) throw new ApiError(404, "PARTNER_LEAD_NOT_FOUND", "Заявка площадки не найдена.");
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + partnerInvitationLifetimeSeconds * 1000).toISOString();
+    const invitation = await config.partnerInvitationRepository.issue(
+      admin.id,
+      request.params.leadId,
+      createHash("sha256").update(token).digest("hex"),
+      expiresAt,
+    );
+    if (!invitation) throw new ApiError(404, "PARTNER_LEAD_NOT_FOUND", "Заявка площадки не найдена.");
+    const requestSiteUrl = `${request.protocol}://${request.headers.host ?? "127.0.0.1"}`;
+    const activationSiteUrl = config.productionMode ? config.publicSiteUrl : requestSiteUrl;
+    const baseUrl = new URL(activationSiteUrl.endsWith("/") ? activationSiteUrl : `${activationSiteUrl}/`);
+    baseUrl.hash = `partner-invite=${token}`;
+    let delivery: PublicNotificationDelivery | null = null;
+    try {
+      const deliveries = await notifications.enqueuePartnerInvitation({
+        invitationId: invitation.id,
+        contactName: lead.contactName,
+        contactEmail: lead.contactEmail,
+        venueTitle: lead.venueTitle,
+        activationUrl: baseUrl.toString(),
+        expiresAt: invitation.expiresAt,
+      });
+      delivery = deliveries[0] ?? null;
+    } catch (error) {
+      app.log.error({ err: error, notificationEvent: "partner_invitation_created" }, "could not enqueue Rooms notification");
+    }
+    return reply.header("Cache-Control", "no-store").code(201).send({
+      invitationId: invitation.id,
+      activationUrl: baseUrl.toString(),
+      expiresAt: invitation.expiresAt,
+      delivery,
+    });
+  });
+
   app.get<{ Querystring: BookingQuery }>("/v1/admin/bookings", {
     schema: {
       querystring: {
@@ -2480,6 +3332,93 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       limit: request.query.limit ?? 80,
     };
     return notifications.listAll(query);
+  });
+
+  app.get("/v1/admin/operations/health", async (request, reply) => {
+    await requireAdmin(request.headers.authorization);
+    const notificationStatuses: readonly NotificationDeliveryStatus[] = ["queued", "processing", "sent", "failed", "cancelled"];
+    const [finance, receipts, refunds, ...notificationGroups] = await Promise.all([
+      config.financeRepository.overview(),
+      config.financeRepository.listReceipts("all", 200),
+      config.financeRepository.listRefunds("all", 200),
+      ...notificationStatuses.map((status) => config.notificationRepository.listAll({ status, limit: 200 })),
+    ]);
+    const notificationsByStatus = Object.fromEntries(notificationStatuses.map((status, index) => [
+      status,
+      notificationGroups[index]?.length ?? 0,
+    ])) as Record<NotificationDeliveryStatus, number>;
+    const receiptsByStatus = Object.fromEntries(["queued", "processing", "succeeded", "failed", "cancelled"].map((status) => [
+      status,
+      receipts.filter((item) => item.status === status).length,
+    ]));
+    const refundsByStatus = Object.fromEntries(["refund_pending", "refunded", "failed"].map((status) => [
+      status,
+      refunds.filter((item) => item.status === status).length,
+    ]));
+    let backup: { status: "not_configured" | "missing" | "fresh" | "stale"; createdAt: string | null; ageHours: number | null; sizeBytes: number | null } = {
+      status: config.backupStatusFile ? "missing" : "not_configured",
+      createdAt: null,
+      ageHours: null,
+      sizeBytes: null,
+    };
+    if (config.backupStatusFile) {
+      try {
+        const metadata = JSON.parse(await readFile(config.backupStatusFile, "utf8")) as { createdAt?: string; sizeBytes?: number };
+        const createdAtMs = new Date(metadata.createdAt ?? "").getTime();
+        if (!Number.isNaN(createdAtMs)) {
+          const ageHours = Math.max(0, (Date.now() - createdAtMs) / (60 * 60 * 1000));
+          backup = {
+            status: ageHours <= 26 ? "fresh" : "stale",
+            createdAt: new Date(createdAtMs).toISOString(),
+            ageHours: Math.round(ageHours * 10) / 10,
+            sizeBytes: Number.isFinite(metadata.sizeBytes) ? Number(metadata.sizeBytes) : null,
+          };
+        }
+      } catch { /* A missing or invalid status file is reported without exposing filesystem details. */ }
+    }
+    const warnings: string[] = [];
+    if (config.repository.storage !== "postgresql") warnings.push("Каталог работает без PostgreSQL.");
+    if (config.notificationRepository.storage !== "postgresql") warnings.push("Очередь уведомлений хранится только в памяти процесса.");
+    if (config.financeRepository.storage !== "postgresql") warnings.push("Финансовые операции хранятся только в памяти процесса.");
+    if (config.photoStorage.storage !== "s3") warnings.push("Фотографии не подключены к объектному хранилищу.");
+    if (config.enableDemoPayments) warnings.push("Используется демонстрационный платёжный адаптер.");
+    if (backup.status === "missing") warnings.push("Резервная копия PostgreSQL ещё не зарегистрирована.");
+    if (backup.status === "stale") warnings.push("Последняя резервная копия PostgreSQL старше 26 часов.");
+    if (notificationsByStatus.failed > 0) warnings.push(`Не доставлено уведомлений: ${notificationsByStatus.failed}.`);
+    if ((receiptsByStatus.failed ?? 0) > 0) warnings.push(`Фискальных чеков с ошибкой: ${receiptsByStatus.failed}.`);
+    if ((refundsByStatus.failed ?? 0) > 0) warnings.push(`Возвратов с ошибкой: ${refundsByStatus.failed}.`);
+    reply.header("Cache-Control", "no-store");
+    return {
+      status: warnings.length ? "attention" : "ready",
+      checkedAt: new Date().toISOString(),
+      startedAt: new Date(operationsStartedAt).toISOString(),
+      uptimeSeconds: Math.floor((Date.now() - operationsStartedAt) / 1000),
+      dependencies: {
+        database: config.repository.storage,
+        notifications: config.notificationRepository.storage,
+        finance: config.financeRepository.storage,
+        media: config.photoStorage.storage,
+        payments: config.enableDemoPayments ? "demo" : "provider",
+      },
+      requests: {
+        total: requestMetrics.total,
+        inFlight: requestMetrics.inFlight,
+        averageDurationMs: requestMetrics.total ? Math.round(requestMetrics.durationTotalMs / requestMetrics.total) : 0,
+        maxDurationMs: requestMetrics.durationMaxMs,
+        slowRequests: requestMetrics.slow,
+        byStatus: requestMetrics.byStatus,
+        lastError: requestMetrics.lastError,
+      },
+      queues: {
+        notifications: notificationsByStatus,
+        receipts: receiptsByStatus,
+        refunds: refundsByStatus,
+        sampledUpTo: 200,
+      },
+      backup,
+      finance,
+      warnings,
+    };
   });
 
   app.get<{ Querystring: ReviewQuerystring }>("/v1/admin/reviews", {
@@ -3099,10 +4038,11 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
       closesAtHour: room.closesAtHour,
       bufferMinutes: room.bufferMinutes,
       services: room.services,
+      priceRules: room.priceRules ?? [],
       availability: {
         date,
         timezone: MOSCOW_TIMEZONE,
-        windows: availabilityForRoom(room, date, room.minimumHours * 60),
+        windows: availabilityForRoom(room, date, room.minimumHours * 60, undefined, 30, room.bufferMinutes, room.bufferMinutes),
       },
     };
   });
@@ -3132,12 +4072,92 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     const capacityFits = !body.guests || rooms.every((room) => room.capacityMax >= body.guests!);
     const windows: AvailabilityWindow[] = capacityFits
       ? intersectAvailability(
-          rooms.map((room) => availabilityForRoom(room, body.date, body.durationMinutes, body.preferredTime)),
+          rooms.map((room) => availabilityForRoom(room, body.date, body.durationMinutes, body.preferredTime, 30, room.bufferMinutes, room.bufferMinutes)),
           body.durationMinutes,
           body.preferredTime,
         )
       : [];
     return { date: body.date, timezone: MOSCOW_TIMEZONE, windows };
+  });
+
+  app.post<{ Body: PlanningPreviewBody }>("/v1/planning/preview", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["roomSets", "date", "preferredTime", "durationMinutes", "guests"],
+        additionalProperties: false,
+        properties: {
+          roomSets: {
+            type: "array",
+            minItems: 1,
+            maxItems: 20,
+            items: {
+              type: "object",
+              required: ["id", "roomIds"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9_-]+$" },
+                roomIds: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+              },
+            },
+          },
+          date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+          preferredTime: { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+          durationMinutes: { type: "integer", minimum: 30, maximum: 720, multipleOf: 15 },
+          guests: { type: "integer", minimum: 1, maximum: 1000 },
+          maxTotalPriceRub: { type: "number", minimum: 0, maximum: 100000000 },
+          maxVariants: { type: "integer", minimum: 1, maximum: 20 },
+          maxVariantsPerRoomSet: { type: "integer", minimum: 1, maximum: 10 },
+          requiredFeatures: { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+          requestedServiceIds: { type: "array", maxItems: 50, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 100 } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (await planningIpAttempts.blocked(request.ip)) {
+      reply.header("Retry-After", "60");
+      throw new ApiError(429, "PLANNING_RATE_LIMITED", "Слишком много расчётов. Повторите через минуту.");
+    }
+    await planningIpAttempts.fail(request.ip);
+    if (!isIsoDate(request.body.date)) throw new ApiError(400, "INVALID_DATE", "Дата должна существовать и иметь формат YYYY-MM-DD.");
+    const setIds = request.body.roomSets.map((roomSet) => roomSet.id);
+    if (new Set(setIds).size !== setIds.length) throw new ApiError(400, "DUPLICATE_ROOM_SET", "Идентификаторы наборов помещений не должны повторяться.");
+    const uniqueRoomIds = [...new Set(request.body.roomSets.flatMap((roomSet) => roomSet.roomIds))];
+    if (uniqueRoomIds.length > 20) throw new ApiError(400, "TOO_MANY_ROOMS", "За один расчёт можно проверить не более 20 помещений.");
+    const found = await Promise.all(uniqueRoomIds.map((id) => config.repository.findRoom(id, request.body.date)));
+    const missing = uniqueRoomIds.filter((_, index) => !found[index]);
+    if (missing.length) throw new ApiError(404, "ROOM_NOT_FOUND", "Одно или несколько помещений не найдены.", missing);
+    const hydrated = await withReservationBlocks(found.filter((room): room is Room => room !== null), request.body.date);
+    const roomsById = new Map(hydrated.map((room) => [room.id, room]));
+    try {
+      const result = planBooking({
+        date: request.body.date,
+        preferredTime: request.body.preferredTime,
+        durationMinutes: request.body.durationMinutes,
+        guests: request.body.guests,
+        requiredFeatures: request.body.requiredFeatures ?? [],
+        requestedServiceIds: request.body.requestedServiceIds ?? [],
+        roomSets: request.body.roomSets.map((roomSet) => ({
+          id: roomSet.id,
+          rooms: roomSet.roomIds.map((id) => roomsById.get(id)!),
+          stepMinutesByRoomId: Object.fromEntries(roomSet.roomIds.map((id) => [id, 30])),
+          bookingBufferByRoomId: Object.fromEntries(roomSet.roomIds.map((id) => {
+            const buffer = roomsById.get(id)?.bufferMinutes ?? 0;
+            return [id, { beforeMinutes: buffer, afterMinutes: buffer }];
+          })),
+        })),
+        ...(request.body.maxTotalPriceRub !== undefined ? { maxTotalPriceRub: request.body.maxTotalPriceRub } : {}),
+        ...(request.body.maxVariants !== undefined ? { maxVariants: request.body.maxVariants } : {}),
+        ...(request.body.maxVariantsPerRoomSet !== undefined ? { maxVariantsPerRoomSet: request.body.maxVariantsPerRoomSet } : {}),
+      });
+      return reply.header("Cache-Control", "no-store").send({
+        ...result,
+        date: request.body.date,
+        timezone: MOSCOW_TIMEZONE,
+      });
+    } catch (error) {
+      throw new ApiError(400, "PLANNING_INPUT_INVALID", error instanceof Error ? error.message : "Некорректные условия расчёта.");
+    }
   });
 
   return app;

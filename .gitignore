@@ -10,6 +10,11 @@ server/node_modules/
 server/.npm-cache/
 server/dist/
 server/coverage/
+server/playwright-report/
+server/test-results/
 server/.env
+server/.env.*
+!server/.env.example
+!server/.env.production.example
 server/server-data/
 server-data/
